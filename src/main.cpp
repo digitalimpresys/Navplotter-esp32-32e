@@ -46,7 +46,7 @@
 #define ZOOM_DEFAULT 12
 
 // ---- Touch ----
-#define TOUCH_PRESSURE_MIN 400
+#define TOUCH_PRESSURE_MIN 350
 #define TOUCH_POLL_MS 15
 #define LONG_PRESS_MS 700
 #define DRAG_MIN_PX 18
@@ -409,12 +409,19 @@ void initTouch() {
   digitalWrite(PIN_TOUCH_CS, HIGH);
 }
 
+// Is the screen being pressed? The single Z1 reading gets small towards one edge of the panel, so the
+// usual combination of the two pressure readings is used: it works the same everywhere.
+bool touchPressed() {
+  int z = (int)touchRead(0xB0) + 4095 - (int)touchRead(0xC0);
+  return z >= TOUCH_PRESSURE_MIN;
+}
+
 // Raw position, averaged; false when the screen is not pressed
 bool touchRaw(int& rx, int& ry) {
-  if(touchRead(0xB0) < TOUCH_PRESSURE_MIN) return false;
+  if(!touchPressed()) return false;
   long sx = 0, sy = 0;
   for(int i = 0; i < 4; i++) { sx += touchRead(0xD0); sy += touchRead(0x90); }
-  if(touchRead(0xB0) < TOUCH_PRESSURE_MIN) return false; // lifted while reading: the values are not good
+  if(!touchPressed()) return false; // lifted while reading: the values are not good
   rx = sx / 4;
   ry = sy / 4;
   return true;
@@ -464,7 +471,7 @@ static void steadyPress(int& rx, int& ry) {
 static void waitRelease() {
   unsigned long clear = millis();
   while(millis() - clear < 400) {
-    if(touchRead(0xB0) >= TOUCH_PRESSURE_MIN) clear = millis();
+    if(touchPressed()) clear = millis();
     delay(15);
   }
 }
@@ -1162,7 +1169,7 @@ void setup() {
   // Calibrate at the first start, or when the screen is held pressed while the board starts
   // (the way out of a calibration gone wrong)
   bool held = true;
-  for(int i = 0; i < 20 && held; i++) { held = touchRead(0xB0) >= TOUCH_PRESSURE_MIN; delay(40); }
+  for(int i = 0; i < 20 && held; i++) { held = touchPressed(); delay(40); }
   if(!calOk || held) calibrateTouch();
   detectGpsBaud();
   beep(1);
