@@ -46,7 +46,7 @@
 #define ZOOM_DEFAULT 12
 
 // ---- Touch ----
-#define TOUCH_PRESSURE_MIN 250
+#define TOUCH_PRESSURE_MIN 400
 #define TOUCH_POLL_MS 15
 #define LONG_PRESS_MS 700
 #define DRAG_MIN_PX 18
@@ -157,6 +157,7 @@ bool mapPlaced = false;
 
 bool sdOk = false, tilesOk = false;
 uint32_t gpsBaud = 0;
+uint32_t gpsBytes = 0;        // characters received from the GPS pin, shown in Setup as a wiring check
 float lastCourse = 0;
 bool courseKnown = false;
 char boatName[BOAT_NAME_LEN] = "";
@@ -243,8 +244,8 @@ void saveSettings() {
   prefs.putBool("sound", soundOn);
   prefs.putInt("zoom", zoom);
   prefs.putInt("dest", destId);
-  prefs.putBool("calok", calOk);
-  prefs.putBytes("cal", cal, sizeof(cal));
+  prefs.putBool("calok2", calOk);
+  prefs.putBytes("cal2", cal, sizeof(cal));
   prefs.end();
 }
 
@@ -255,8 +256,8 @@ void loadSettings() {
   soundOn = prefs.getBool("sound", true);
   zoom = prefs.getInt("zoom", ZOOM_DEFAULT);
   destId = prefs.getInt("dest", -1);
-  calOk = prefs.getBool("calok", false);
-  if(calOk) prefs.getBytes("cal", cal, sizeof(cal));
+  calOk = prefs.getBool("calok2", false);
+  if(calOk) prefs.getBytes("cal2", cal, sizeof(cal));
   prefs.end();
   if(boatName[0] == '\0') strcpy(boatName, "BOAT");
 }
@@ -342,6 +343,7 @@ void detectGpsBaud() {
       while(Serial2.available()) {
         char c = Serial2.read();
         total++;
+        gpsBytes++;
         if(c == '$') dollars++;
         if((c >= ' ' && c <= '~') || c == '\r' || c == '\n') printable++;
       }
@@ -357,7 +359,7 @@ void detectGpsBaud() {
 
 void readGps() {
   static unsigned long lastRetry = 0;
-  while(Serial2.available()) gps.encode(Serial2.read());
+  while(Serial2.available()) { gps.encode(Serial2.read()); gpsBytes++; }
   // No module found at boot: look again every now and then
   if(!gpsBaud && millis() - lastRetry > 30000) {
     lastRetry = millis();
@@ -395,7 +397,7 @@ uint16_t touchRead(uint8_t cmd) {
     digitalWrite(PIN_TOUCH_CLK, LOW);
   }
   digitalWrite(PIN_TOUCH_CS, HIGH);
-  return v >> 4;
+  return (v >> 3) & 0x0FFF; // 12-bit result, after one busy bit
 }
 
 void initTouch() {
@@ -439,52 +441,89 @@ static bool solve3(double m[3][3], double v[3], float* r) {
   return true;
 }
 
-// Four crosses to touch; whatever way round the touch panel is mounted, the fit sorts it out
+// Waits for a steady press and returns its raw position (average of a short, still hold)
+static void steadyPress(int& rx, int& ry) {
+  while(true) {
+    int x, y, minX = 9999, maxX = 0, minY = 9999, maxY = 0, n = 0;
+    long sx = 0, sy = 0;
+    unsigned long start = millis();
+    while(touchRaw(x, y)) {
+      sx += x; sy += y; n++;
+      minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y);
+      delay(15);
+      // Half a second without moving: good
+      if(millis() - start > 500 && n >= 20) {
+        if(maxX - minX < 150 && maxY - minY < 150) { rx = sx / n; ry = sy / n; return; }
+        break; // the finger slid: start again
+      }
+    }
+    delay(15);
+  }
+}
+
+static void waitRelease() {
+  unsigned long clear = millis();
+  while(millis() - clear < 400) {
+    if(touchRead(0xB0) >= TOUCH_PRESSURE_MIN) clear = millis();
+    delay(15);
+  }
+}
+
+// Four crosses to press and hold. Whatever way round the touch panel is mounted, the fit sorts it out;
+// if the four points do not agree with each other the procedure starts again.
 void calibrateTouch() {
   const int px[4] = {24, SCREEN_W - 24, SCREEN_W - 24, 24};
   const int py[4] = {24, 24, SCREEN_H - 24, SCREEN_H - 24};
-  int rx[4], ry[4];
-  for(int k = 0; k < 4; k++) {
-    tft.fillScreen(C_BLACK);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(C_WHITE, C_BLACK);
-    tft.drawString(TR("Touch calibration", "Calibrazione del touch"), SCREEN_W / 2, SCREEN_H / 2 - 16, 4);
-    tft.drawString(TR("Press the centre of the cross", "Premi il centro della croce"), SCREEN_W / 2, SCREEN_H / 2 + 16, 2);
-    tft.drawLine(px[k] - 14, py[k], px[k] + 14, py[k], C_RED);
-    tft.drawLine(px[k], py[k] - 14, px[k], py[k] + 14, C_RED);
-    tft.drawCircle(px[k], py[k], 8, C_RED);
-    while(touchRead(0xB0) >= TOUCH_PRESSURE_MIN) delay(20);  // wait for the finger to be up
-    delay(250);
-    long sx = 0, sy = 0;
-    int n = 0;
-    while(n < 12) {
-      int x, y;
-      if(touchRaw(x, y)) { sx += x; sy += y; n++; } else { sx = sy = 0; n = 0; }
-      delay(15);
+  bool retry = false;
+  while(true) {
+    int rx[4], ry[4];
+    for(int k = 0; k < 4; k++) {
+      tft.fillScreen(C_BLACK);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(C_WHITE, C_BLACK);
+      tft.drawString(TR("Touch calibration", "Calibrazione del touch"), SCREEN_W / 2, SCREEN_H / 2 - 30, 4);
+      tft.drawString(TR("Press and HOLD the centre of the cross", "Premi e TIENI premuto il centro della croce"), SCREEN_W / 2, SCREEN_H / 2, 2);
+      tft.drawString(TR("until it turns green", "finche' diventa verde"), SCREEN_W / 2, SCREEN_H / 2 + 18, 2);
+      if(retry) {
+        tft.setTextColor(C_RED, C_BLACK);
+        tft.drawString(TR("Not precise enough: again", "Non abbastanza preciso: ripeti"), SCREEN_W / 2, SCREEN_H / 2 + 44, 2);
+      }
+      tft.drawLine(px[k] - 14, py[k], px[k] + 14, py[k], C_RED);
+      tft.drawLine(px[k], py[k] - 14, px[k], py[k] + 14, C_RED);
+      tft.drawCircle(px[k], py[k], 8, C_RED);
+      waitRelease();
+      steadyPress(rx[k], ry[k]);
+      tft.fillCircle(px[k], py[k], 10, TFT_GREEN);
+      Serial.printf("Calibration point %d: raw %d, %d\n", k + 1, rx[k], ry[k]);
+      waitRelease();
     }
-    rx[k] = sx / n;
-    ry[k] = sy / n;
-    tft.fillCircle(px[k], py[k], 8, C_GREEN);
-    Serial.printf("Calibration point %d: raw %d, %d\n", k + 1, rx[k], ry[k]);
-  }
-  while(touchRead(0xB0) >= TOUCH_PRESSURE_MIN) delay(20);
 
-  // Least squares over the four points
-  double m[3][3] = {{0}}, vx[3] = {0}, vy[3] = {0};
-  for(int k = 0; k < 4; k++) {
-    double r[3] = {(double)rx[k], (double)ry[k], 1.0};
-    for(int i = 0; i < 3; i++) {
-      for(int j = 0; j < 3; j++) m[i][j] += r[i] * r[j];
-      vx[i] += r[i] * px[k];
-      vy[i] += r[i] * py[k];
+    // Least squares over the four points
+    double m[3][3] = {{0}}, vx[3] = {0}, vy[3] = {0};
+    for(int k = 0; k < 4; k++) {
+      double r[3] = {(double)rx[k], (double)ry[k], 1.0};
+      for(int i = 0; i < 3; i++) {
+        for(int j = 0; j < 3; j++) m[i][j] += r[i] * r[j];
+        vx[i] += r[i] * px[k];
+        vy[i] += r[i] * py[k];
+      }
     }
-  }
-  float nc[6];
-  if(solve3(m, vx, nc) && solve3(m, vy, nc + 3)) {
-    memcpy(cal, nc, sizeof(cal));
-    calOk = true;
-    saveSettings();
-    Serial.printf("Calibration: %.5f %.5f %.1f / %.5f %.5f %.1f\n", cal[0], cal[1], cal[2], cal[3], cal[4], cal[5]);
+    float nc[6];
+    bool ok = solve3(m, vx, nc) && solve3(m, vy, nc + 3);
+    // Each cross must land within a few pixels of where it was drawn
+    for(int k = 0; ok && k < 4; k++) {
+      float ex = nc[0] * rx[k] + nc[1] * ry[k] + nc[2] - px[k], ey = nc[3] * rx[k] + nc[4] * ry[k] + nc[5] - py[k];
+      if(fabs(ex) > 12 || fabs(ey) > 12) ok = false;
+    }
+    if(ok) {
+      memcpy(cal, nc, sizeof(cal));
+      calOk = true;
+      saveSettings();
+      Serial.printf("Calibration: %.5f %.5f %.1f / %.5f %.5f %.1f\n", cal[0], cal[1], cal[2], cal[3], cal[4], cal[5]);
+      break;
+    }
+    Serial.println("Calibration rejected, repeating");
+    retry = true;
   }
   requestRedraw();
 }
@@ -909,7 +948,7 @@ void drawSetupPage() {
   }
   int y = SETUP_Y0 + 3 * (SETUP_BTN_H + 4) + 6;
   char buf[64];
-  if(!gpsBaud) snprintf(buf, sizeof(buf), "GPS: %s", TR("not found (IO35)", "non trovato (IO35)"));
+  if(!gpsBaud) snprintf(buf, sizeof(buf), "GPS: %s, %lu byte", TR("not found on IO35", "non trovato su IO35"), (unsigned long)gpsBytes);
   else snprintf(buf, sizeof(buf), "GPS: %lu baud, %s, %d sat", (unsigned long)gpsBaud, gpsFix() ? "fix" : TR("no fix", "no fix"), gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
   cv.text(buf, 6, y, 2, C_BLACK, C_WHITE);
   if(!sdOk) snprintf(buf, sizeof(buf), "SD: %s", TR("not found", "non trovata"));
@@ -1120,7 +1159,11 @@ void setup() {
   loadWaypoints();
   if(destId >= 0 && !findWp(destId)) destId = -1;
 
-  if(!calOk) calibrateTouch();
+  // Calibrate at the first start, or when the screen is held pressed while the board starts
+  // (the way out of a calibration gone wrong)
+  bool held = true;
+  for(int i = 0; i < 20 && held; i++) { held = touchRead(0xB0) >= TOUCH_PRESSURE_MIN; delay(40); }
+  if(!calOk || held) calibrateTouch();
   detectGpsBaud();
   beep(1);
   requestRedraw();
