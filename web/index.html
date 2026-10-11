@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#0b1d33">
+<title>NavPlotter</title>
+<style>
+:root{--bg:#0b1d33;--panel:#12294a;--line:#27456f;--text:#eef3fa;--dim:#9db0c9;--accent:#3da5ff;--red:#e5383b;--green:#2fd16b;--water:#a9d3ea}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:16px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overflow:hidden;overscroll-behavior:none}
+#app{display:flex;flex-direction:column;height:100%;padding-top:env(safe-area-inset-top)}
+#status{display:flex;gap:12px;align-items:center;padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--line);font-size:14px;white-space:nowrap;overflow:hidden}
+#status b{font-size:17px}
+#status .sp{flex:1}
+#dot{width:10px;height:10px;border-radius:50%;background:var(--red);flex:none}
+#dot.ok{background:var(--green)}
+#alarm{display:none;background:var(--red);color:#fff;font-weight:700;padding:6px 8px;font-size:15px;align-items:center;gap:8px}
+#alarm.on{display:flex}
+#alarmText{flex:1;text-align:center;animation:blink 1s steps(2) infinite}
+#alarm.muted #alarmText{animation:none}
+@keyframes blink{50%{opacity:.6}}
+#mute{flex:none;border:2px solid #fff;background:none;color:#fff;border-radius:9px;padding:7px 10px;font-size:14px;font-weight:700}
+#alarm.muted #mute{background:#fff;color:var(--red)}
+#offline{display:none;background:#8a6d00;color:#fff;text-align:center;padding:4px;font-size:13px}
+#offline.on{display:block}
+main{flex:1;position:relative;overflow:hidden}
+.page{position:absolute;inset:0;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+.page.on{display:block}
+#pMap,#pCompass{overflow:hidden}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#mapBtns{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:8px}
+#mapBtns button{width:46px;height:46px;border-radius:10px;border:1px solid var(--line);background:rgba(18,41,74,.92);color:var(--text);font-size:24px;font-weight:700}
+#mapBtns button.on{background:var(--accent);color:#04121f}
+#mapInfo{position:absolute;left:10px;bottom:10px;background:rgba(18,41,74,.92);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:13px;pointer-events:none}
+#sheet{position:absolute;left:8px;right:8px;bottom:8px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+#sheet.on{display:block}
+#sheet h3{margin:0 0 6px}
+#sheet .row{display:flex;gap:8px;margin-top:10px}
+nav{display:flex;background:var(--panel);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;border:0;color:var(--dim);padding:9px 2px 8px;font-size:12px}
+nav button.on{color:var(--accent);font-weight:700}
+nav button i{display:block;font-style:normal;font-size:20px;line-height:22px}
+.wrap{padding:12px;max-width:640px;margin:0 auto}
+h2{margin:6px 0 12px;font-size:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.card.alarm{border-color:var(--red);box-shadow:0 0 0 1px var(--red) inset}
+.card.stale{opacity:.55}
+.card .title{display:flex;align-items:center;gap:8px;font-weight:700;font-size:17px}
+.card .sub{color:var(--dim);font-size:14px;margin-top:4px}
+.tag{font-size:11px;font-weight:400;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--dim)}
+.btn{background:var(--accent);color:#04121f;border:0;border-radius:9px;padding:10px 14px;font-size:15px;font-weight:700}
+.btn.sec{background:none;color:var(--text);border:1px solid var(--line)}
+.btn.red{background:var(--red);color:#fff}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+label{display:block;margin:14px 0 6px;color:var(--dim);font-size:14px}
+input[type=text],input[type=password],select{width:100%;padding:11px;border-radius:9px;border:1px solid var(--line);background:#0b1d33;color:var(--text);font-size:16px}
+.types{display:flex;gap:8px}
+.types label{flex:1;margin:0;border:1px solid var(--line);border-radius:10px;padding:8px 4px;text-align:center;color:var(--text);font-size:14px}
+.types input{display:none}
+.types label.on{border-color:var(--accent);background:rgba(61,165,255,.16)}
+.types canvas{width:44px;height:44px;margin:0 auto 4px}
+.check{display:flex;align-items:center;gap:10px;margin-top:14px}
+.check input{width:22px;height:22px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+.kv span:nth-child(odd){color:var(--dim)}
+.hint{color:var(--dim);font-size:13px;margin-top:6px}
+.empty{color:var(--dim);text-align:center;padding:30px 10px}
+.seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:12px}
+.seg button{flex:1;background:none;border:0;color:var(--dim);padding:10px;font-size:15px}
+.seg button.on{background:var(--accent);color:#04121f;font-weight:700}
+.leg{display:flex;align-items:center;gap:6px;padding:7px 0;border-top:1px solid var(--line)}
+.leg span{flex:1}
+.leg button{width:38px;height:36px;border-radius:8px;border:1px solid var(--line);background:none;color:var(--text);font-size:16px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="status">
+    <span id="dot"></span>
+    <span><b id="sSog">--.-</b> kn</span>
+    <span><b id="sCog">---</b>&deg;</span>
+    <span id="sHidden" class="tag" style="display:none" data-i18n="hidden"></span>
+    <span id="sDest"></span>
+    <span class="sp"></span>
+    <span id="sTime">--:--:--</span>
+  </div>
+  <div id="offline" data-i18n="offline"></div>
+  <div id="alarm"><span id="alarmText"></span><button id="mute"></button></div>
+  <main>
+    <section class="page on" id="pMap">
+      <canvas id="map"></canvas>
+      <div id="mapBtns">
+        <button id="zIn">+</button>
+        <button id="zOut">&minus;</button>
+        <button id="follow" class="on">&#9678;</button>
+      </div>
+      <div id="mapInfo"></div>
+      <div id="sheet"></div>
+    </section>
+    <section class="page" id="pCompass"><canvas id="compass"></canvas></section>
+    <section class="page" id="pNearby"><div class="wrap"><h2 data-i18n="nearby"></h2><div id="nearbyList"></div></div></section>
+    <section class="page" id="pWp"><div class="wrap">
+      <div class="seg"><button id="segWp" class="on" data-i18n="waypoints"></button><button id="segRt" data-i18n="routes"></button></div>
+      <div id="wpPane">
+        <div class="btns" style="margin:0 0 12px"><button class="btn" id="wpHere" data-i18n="wpHere"></button></div>
+        <div id="wpList"></div><div class="hint" data-i18n="wpHint"></div>
+      </div>
+      <div id="rtPane" style="display:none">
+        <div class="btns" style="margin:0 0 12px"><button class="btn" id="rtNew" data-i18n="rtNew"></button></div>
+        <div id="rtList"></div>
+      </div></div></section>
+    <section class="page" id="pSetup"><div class="wrap"><h2 data-i18n="setup"></h2>
+      <div class="card">
+        <label data-i18n="language"></label>
+        <select id="fLang"><option value="en">English</option><option value="it">Italiano</option></select>
+        <label data-i18n="nodeName"></label>
+        <input type="text" id="fName" maxlength="11" autocomplete="off" autocapitalize="off">
+        <div class="check"><input type="checkbox" id="fShare"><span data-i18n="share"></span></div>
+        <div class="hint" data-i18n="shareHint"></div>
+        <label data-i18n="nodeType"></label>
+        <div class="types" id="fTypes"></div>
+        <div class="hint" data-i18n="typeHint"></div>
+        <label data-i18n="alarmRange"></label>
+        <select id="fRange"><option value="3">3 NM</option><option value="6">6 NM</option><option value="12">12 NM</option></select>
+        <div class="hint" data-i18n="rangeHint"></div>
+        <div class="check"><input type="checkbox" id="fSound"><span data-i18n="alarmSound"></span></div>
+        <div class="btns"><button class="btn sec" id="testSound" data-i18n="testSound"></button></div>
+        <div id="netBox">
+        <label data-i18n="connection"></label>
+        <select id="fNet"><option value="0" data-i18n="netOffgrid"></option><option value="1" data-i18n="netDirect"></option><option value="2" data-i18n="netBoat"></option></select>
+        <div class="hint" id="netHint"></div>
+        <div id="boatBox" style="display:none">
+          <label data-i18n="boatSsid"></label>
+          <input type="text" id="fStaSsid" maxlength="32" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <label data-i18n="boatPass"></label>
+          <input type="password" id="fStaPass" maxlength="64" autocomplete="off">
+          <div class="hint" id="boatPassHint"></div>
+        </div>
+        </div>
+        <label data-i18n="charts"></label>
+        <select id="fTiles"><option value="0" data-i18n="tilesOnline"></option><option value="1" data-i18n="tilesSd"></option><option value="2" data-i18n="tilesNone"></option></select>
+        <label data-i18n="wifiPass"></label>
+        <input type="password" id="fPass" maxlength="32" autocomplete="off" placeholder="">
+        <div class="hint" data-i18n="wifiHint"></div>
+        <div class="btns"><button class="btn" id="save" data-i18n="save"></button><span id="saved" class="hint"></span></div>
+      </div>
+      <div class="card"><div class="kv" id="info"></div></div>
+    </div></section>
+  </main>
+  <nav id="nav">
+    <button data-p="pMap" class="on"><i>&#9973;</i><span data-i18n="map"></span></button>
+    <button data-p="pCompass"><i>&#10022;</i><span data-i18n="compass"></span></button>
+    <button data-p="pNearby"><i>&#9678;</i><span data-i18n="nearby"></span></button>
+    <button data-p="pWp"><i>&#9873;</i><span data-i18n="waypoints"></span></button>
+    <button data-p="pSetup"><i>&#9881;</i><span data-i18n="setup"></span></button>
+  </nav>
+</div>
+<script>
+'use strict';
+// ---------- Texts: English is the reference language, Italian the first translation ----------
+const I18N = {
+en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup:'Setup',
+  offline:'Connection to the node lost', noFix:'Waiting for GPS fix', noGps:'GPS not found',
+  language:'Language', nodeName:'Node name', nodeType:'This node is a', boat:'Boat', person:'Person', object:'Object',
+  typeHint:'The type is sent over LoRa: the other nodes show the matching symbol.',
+  alarmRange:'Alarm range', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
+  alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
+  tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
+  wifiPass:'New password for the node WiFi', wifiHint:'Leave empty to keep it. At least 8 characters; the node restarts.',
+  save:'Save', saved:'Saved', saveFail:'Not saved', restarting:'Saved. The node is restarting: reconnect to the WiFi of the chosen connection and reload this page.',
+  collision:'COLLISION', in:'in', noNodes:'No nodes received yet', relayed:'relayed', simulated:'simulated',
+  dist:'Distance', brg:'Bearing', speed:'Speed', course:'Course', cpa:'Closest approach', noApproach:'not approaching',
+  seen:'Last heard', ago:'s ago', signal:'Signal', close:'Close', centerOn:'Show on map',
+  wpHere:'Add waypoint at my position', wpHint:'Long press on the map to add a waypoint there.', noWp:'No waypoints yet',
+  wpName:'Waypoint name', goTo:'Go to', stop:'Stop', rename:'Rename', del:'Delete', delAsk:'Delete this waypoint?',
+  dest:'Destination', heading:'HEADING', fromCog:'from GPS course', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
+  iGps:'GPS', iFix:'fix', iSats:'satellites', iLora:'LoRa', iSent:'sent', iRecv:'received', iRelay:'relayed', iSd:'SD card', iBat:'Battery',
+  iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me',
+  routes:'Routes', rtNew:'New route', rtName:'Route name', noRoutes:'No routes yet', rtFollow:'Follow', edit:'Edit', done:'Done',
+  rtAddWp:'Add a waypoint to the route', rtEmpty:'No waypoints in this route yet', rtNoWps:'Create some waypoints first', total:'Total', remaining:'Remaining',
+  route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at',
+  mute:'Silence', muted:'Silenced', hidden:'hidden',
+  share:'Share my position over LoRa', shareHint:'When off, this node stays invisible to the others. It still receives them, raises alarms and relays their packets.',
+  connection:'Connection', netOffgrid:'Off-grid: node WiFi, charts from SD card', netDirect:'Node WiFi, online charts', netBoat:'Boat WiFi (internet through the boat router)',
+  hintOffgrid:'Connect the phone to the node WiFi. Nothing needs internet; charts come from the SD card on the node.',
+  hintDirect:'Connect the phone to the node WiFi. Charts are downloaded by the phone, so it needs mobile data.',
+  hintBoat:'The node joins the boat WiFi. Connect the phone to the boat WiFi too and open',
+  hintBoat2:'or the address shown on the node display. The node WiFi stays on as a way back in.',
+  boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
+  iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
+it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
+  offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
+  language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
+  typeHint:'Il tipo viene trasmesso via LoRa: gli altri nodi mostrano il simbolo corrispondente.',
+  alarmRange:'Raggio degli allarmi', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
+  alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
+  tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
+  wifiPass:'Nuova password del WiFi del nodo', wifiHint:'Lascia vuoto per non cambiarla. Almeno 8 caratteri; il nodo si riavvia.',
+  save:'Salva', saved:'Salvato', saveFail:'Non salvato', restarting:'Salvato. Il nodo si sta riavviando: ricollegati al WiFi del collegamento scelto e ricarica questa pagina.',
+  collision:'ABBORDO', in:'fra', noNodes:'Nessun nodo ricevuto', relayed:'ripetuto', simulated:'simulato',
+  dist:'Distanza', brg:'Rilevamento', speed:'Velocità', course:'Rotta', cpa:'Massimo avvicinamento', noApproach:'nessun avvicinamento',
+  seen:'Ultimo contatto', ago:'s fa', signal:'Segnale', close:'Chiudi', centerOn:'Mostra sulla mappa',
+  wpHere:'Aggiungi waypoint qui', wpHint:'Tocco lungo sulla mappa per aggiungere un waypoint in quel punto.', noWp:'Nessun waypoint',
+  wpName:'Nome del waypoint', goTo:'Vai', stop:'Annulla', rename:'Rinomina', del:'Elimina', delAsk:'Eliminare questo waypoint?',
+  dest:'Destinazione', heading:'PRORA', fromCog:'da COG', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
+  iGps:'GPS', iFix:'fix', iSats:'satelliti', iLora:'LoRa', iSent:'inviati', iRecv:'ricevuti', iRelay:'ripetuti', iSd:'Scheda SD', iBat:'Batteria',
+  iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io',
+  routes:'Rotte', rtNew:'Nuova rotta', rtName:'Nome della rotta', noRoutes:'Nessuna rotta', rtFollow:'Segui', edit:'Modifica', done:'Fine',
+  rtAddWp:'Aggiungi un waypoint alla rotta', rtEmpty:'Nessun waypoint in questa rotta', rtNoWps:'Crea prima dei waypoint', total:'Totale', remaining:'Mancano',
+  route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a',
+  mute:'Silenzia', muted:'Silenziato', hidden:'nascosto',
+  share:'Trasmetti la mia posizione via LoRa', shareHint:'Se disattivato, questo nodo resta invisibile agli altri. Continua a riceverli, a dare gli allarmi e a fare da ponte per i loro pacchetti.',
+  connection:'Collegamento', netOffgrid:'Off-grid: WiFi del nodo, carte da scheda SD', netDirect:'WiFi del nodo, carte online', netBoat:'WiFi della barca (internet dal router di bordo)',
+  hintOffgrid:'Collega il telefono al WiFi del nodo. Non serve internet: le carte arrivano dalla scheda SD del nodo.',
+  hintDirect:'Collega il telefono al WiFi del nodo. Le carte le scarica il telefono, quindi gli servono i dati mobili.',
+  hintBoat:'Il nodo si collega al WiFi della barca. Collega anche il telefono al WiFi della barca e apri',
+  hintBoat2:"oppure l'indirizzo mostrato sul display del nodo. Il WiFi del nodo resta acceso come via di riserva.",
+  boatSsid:'Nome del WiFi della barca', boatPass:'Password del WiFi della barca', passKeep:'Una password è già salvata: lascia vuoto per non cambiarla.', passNone:'Lascia vuoto per una rete aperta.',
+  iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo'}
+};
+const TYPES = ['boat', 'person', 'object'];
+const $ = id => document.getElementById(id);
+let lang = 'en', cfg = {name:'', type:0, share:true, alarmRange:3, tiles:0, sound:true}, st = null, online = false;
+let ud = {wps:[], dest:null, nextId:1, routes:[], route:null, nextRouteId:1};
+const ARRIVAL_NM = 0.05; // a route waypoint counts as reached inside this distance
+const t = k => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pad3 = n => String(Math.round(n) % 360).padStart(3, '0');
+const fmtNm = n => n < 10 ? n.toFixed(2) : n < 100 ? n.toFixed(1) : n.toFixed(0);
+// Lists are rebuilt only when their content changes, and never while a finger is down (a tap would be lost)
+let fingerDown = false;
+document.addEventListener('pointerdown', () => { fingerDown = true; }, true);
+['pointerup', 'pointercancel'].forEach(ev => document.addEventListener(ev, () => { fingerDown = false; }, true));
+function setHtml(el, html) { if(el._html !== html) { el.innerHTML = html; el._html = html; } }
+const fmtT = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(e => { e.textContent = t(e.dataset.i18n); });
+  buildTypes();
+  renderAll();
+}
+
+// ---------- Geometry ----------
+const R2D = 180 / Math.PI, D2R = Math.PI / 180;
+function distBrg(lat1, lon1, lat2, lon2) {
+  const dy = (lat2 - lat1) * 110540, dx = (lon2 - lon1) * 111320 * Math.cos(lat1 * D2R);
+  let b = Math.atan2(dx, dy) * R2D; if(b < 0) b += 360;
+  return {nm: Math.hypot(dx, dy) / 1852, brg: b};
+}
+const worldSize = z => 256 * Math.pow(2, z);
+const lonToX = (lon, z) => (lon + 180) / 360 * worldSize(z);
+function latToY(lat, z) { lat = Math.max(-85.0511, Math.min(85.0511, lat)); const r = lat * D2R; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * worldSize(z); }
+const xToLon = (x, z) => x / worldSize(z) * 360 - 180;
+const yToLat = (y, z) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / worldSize(z)))) * R2D;
+
+// ---------- Symbols: boat = arrow, person = ring with a dot, object = diamond ----------
+function drawSymbol(c, type, x, y, cog, color, s, hollow) {
+  c.save(); c.translate(x, y); c.lineWidth = 2.5; c.strokeStyle = color; c.fillStyle = hollow ? '#fff' : color; c.lineJoin = 'round';
+  if(type === 1) {
+    c.beginPath(); c.arc(0, 0, s * 0.8, 0, 7); c.fillStyle = '#fff'; c.fill(); c.stroke();
+    c.beginPath(); c.arc(0, 0, s * 0.33, 0, 7); c.fillStyle = color; c.fill();
+  } else if(type === 2) {
+    c.beginPath(); c.moveTo(0, -s); c.lineTo(s, 0); c.lineTo(0, s); c.lineTo(-s, 0); c.closePath(); c.fill(); c.stroke();
+  } else {
+    c.rotate(cog * D2R);
+    c.beginPath(); c.moveTo(0, -s * 1.25); c.lineTo(s * 0.75, s * 0.85); c.lineTo(0, s * 0.45); c.lineTo(-s * 0.75, s * 0.85); c.closePath(); c.fill(); c.stroke();
+  }
+  c.restore();
+}
+
+// ---------- Canvas helper ----------
+function fit(cv) {
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if(cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {c, w, h};
+}
+
+// ---------- Map ----------
+const map = {lat: 45, lon: 12, z: 13, follow: true, placed: false};
+try { const m = JSON.parse(localStorage.getItem('np-map') || '{}'); if(m.z) map.z = m.z; } catch(e) {}
+const tiles = new Map();
+function tileUrl(z, x, y) {
+  if(cfg.tiles === 0) return 'https://tile.openstreetmap.org/' + z + '/' + x + '/' + y + '.png';
+  if(cfg.tiles === 1) return '/tiles/' + z + '/' + x + '/' + y + '.jpg';
+  return null;
+}
+function getTile(z, x, y) {
+  const url = tileUrl(z, x, y); if(!url) return null;
+  let e = tiles.get(url);
+  if(!e) {
+    if(tiles.size > 150) tiles.delete(tiles.keys().next().value);
+    e = {img: new Image(), ok: false};
+    e.img.onload = () => { e.ok = true; drawMap(); };
+    e.img.src = url; tiles.set(url, e);
+  }
+  return e.ok ? e.img : null;
+}
+let hits = [];
+function drawMap() {
+  if(!$('pMap').classList.contains('on')) return;
+  const {c, w, h} = fit($('map')), z = map.z;
+  const cx = lonToX(map.lon, z), cy = latToY(map.lat, z), ox = Math.round(cx - w / 2), oy = Math.round(cy - h / 2);
+  const px = (lat, lon) => [lonToX(lon, z) - ox, latToY(lat, z) - oy];
+  c.fillStyle = '#9cdaef'; c.fillRect(0, 0, w, h); // same sea colour as the chart tiles, which leave open sea out
+  const n = Math.pow(2, z);
+  for(let ty = Math.floor(oy / 256); ty <= Math.floor((oy + h) / 256); ty++) {
+    if(ty < 0 || ty >= n) continue;
+    for(let tx = Math.floor(ox / 256); tx <= Math.floor((ox + w) / 256); tx++) {
+      const img = getTile(z, ((tx % n) + n) % n, ty);
+      if(img) c.drawImage(img, tx * 256 - ox, ty * 256 - oy, 256, 256);
+    }
+  }
+  hits = [];
+  c.font = '600 13px sans-serif'; c.textAlign = 'center';
+  const label = (s, x, y, col) => { c.lineJoin = 'round'; c.lineWidth = 3; c.strokeStyle = 'rgba(255,255,255,.9)'; c.strokeText(s, x, y); c.fillStyle = col; c.fillText(s, x, y); };
+  const own = st && st.own.fix ? st.own : null;
+  // Waypoints and the line to the destination
+  const dest = ud.wps.find(p => p.id === ud.dest);
+  if(own && dest) {
+    const a = px(own.lat, own.lon), b = px(dest.lat, dest.lon);
+    c.strokeStyle = '#e5383b'; c.lineWidth = 3; c.setLineDash([8, 6]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); c.setLineDash([]);
+  }
+  const ar = activeRoute();
+  if(ar) {
+    const pts = routeWps(ar).map(p => px(p.lat, p.lon));
+    c.strokeStyle = '#c026d3'; c.fillStyle = '#c026d3'; c.lineWidth = 3;
+    for(let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+      // Arrow in the middle of the leg, pointing the way to go
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, an = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      if(Math.hypot(b[0] - a[0], b[1] - a[1]) > 40) { c.save(); c.translate(mx, my); c.rotate(an); c.beginPath(); c.moveTo(9, 0); c.lineTo(-6, -6); c.lineTo(-6, 6); c.closePath(); c.fill(); c.restore(); }
+    }
+  }
+  for(const p of ud.wps) {
+    const [x, y] = px(p.lat, p.lon); if(x < -40 || y < -40 || x > w + 40 || y > h + 40) continue;
+    const col = p.id === ud.dest ? '#e5383b' : '#7a2ea0';
+    c.strokeStyle = col; c.lineWidth = 2.5; c.beginPath(); c.arc(x, y, 7, 0, 7); c.moveTo(x - 11, y); c.lineTo(x + 11, y); c.moveTo(x, y - 11); c.lineTo(x, y + 11); c.stroke();
+    label(p.name, x, y - 15, col);
+    hits.push({x, y, wp: p});
+  }
+  // Other nodes
+  if(st) for(const g of st.targets) {
+    const [x, y] = px(g.lat, g.lon); if(x < -40 || y < -40 || x > w + 40 || y > h + 40) continue;
+    const col = g.alarm ? '#e5383b' : g.stale ? '#777' : '#1456c8';
+    if(!g.stale && g.sog >= 0.3 && g.type === 0) {
+      const mpp = 156543.03392 * Math.cos(g.lat * D2R) / Math.pow(2, z), len = Math.min(70, g.sog * 0.514444 * 180 / mpp), r = g.cog * D2R;
+      c.strokeStyle = col; c.lineWidth = 2; c.beginPath(); c.moveTo(x, y); c.lineTo(x + len * Math.sin(r), y - len * Math.cos(r)); c.stroke();
+    }
+    drawSymbol(c, g.type, x, y, g.cog, col, 11, true);
+    label(g.name, x, y + 27, col);
+    hits.push({x, y, tg: g.id});
+  }
+  // This node
+  if(own) {
+    const [x, y] = px(own.lat, own.lon);
+    drawSymbol(c, cfg.type, x, y, own.cog, '#e5383b', 13, false);
+  }
+  // Scale bar
+  const mpp = 156543.03392 * Math.cos(map.lat * D2R) / Math.pow(2, z);
+  const steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500];
+  let nm = steps[0]; for(const s of steps) { if(s * 1852 / mpp <= 110) nm = s; }
+  const bw = nm * 1852 / mpp, bx = w - 14 - bw, by = h - 16;
+  c.strokeStyle = '#04121f'; c.lineWidth = 2; c.beginPath(); c.moveTo(bx, by - 6); c.lineTo(bx, by); c.lineTo(bx + bw, by); c.lineTo(bx + bw, by - 6); c.stroke();
+  c.textAlign = 'right'; label(nm + ' NM', w - 14, by - 10, '#04121f');
+  $('mapInfo').textContent = !st ? '' : !st.gpsBaud ? t('noGps') : !st.own.fix ? t('noFix') : 'Z' + z;
+}
+function setZoom(z) { map.z = Math.max(3, Math.min(18, z)); try { localStorage.setItem('np-map', JSON.stringify({z: map.z})); } catch(e) {} drawMap(); }
+function setFollow(on) { map.follow = on; $('follow').classList.toggle('on', on); if(on && st && st.own.fix) { map.lat = st.own.lat; map.lon = st.own.lon; } drawMap(); }
+$('zIn').onclick = () => setZoom(map.z + 1);
+$('zOut').onclick = () => setZoom(map.z - 1);
+$('follow').onclick = () => setFollow(!map.follow);
+
+// Drag to pan, pinch to zoom, tap for details, long press to add a waypoint
+(function() {
+  const cv = $('map'), pts = new Map(); let moved = false, pinch = 0, timer = 0, down = null;
+  const pos = e => { const r = cv.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top}; };
+  const toLL = p => { const w = cv.clientWidth, h = cv.clientHeight, z = map.z; return {lat: yToLat(latToY(map.lat, z) + p.y - h / 2, z), lon: xToLon(lonToX(map.lon, z) + p.x - w / 2, z)}; };
+  cv.addEventListener('pointerdown', e => {
+    cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, pos(e)); moved = false; down = pos(e);
+    clearTimeout(timer);
+    if(pts.size === 1) timer = setTimeout(() => { if(!moved && pts.size === 1) { moved = true; addWaypoint(toLL(down)); } }, 650);
+    if(pts.size === 2) { const a = [...pts.values()]; pinch = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); }
+  });
+  cv.addEventListener('pointermove', e => {
+    if(!pts.has(e.pointerId)) return;
+    const p = pos(e), o = pts.get(e.pointerId); pts.set(e.pointerId, p);
+    if(pts.size === 1) {
+      if(Math.hypot(p.x - down.x, p.y - down.y) > 8) moved = true;
+      if(moved) {
+        const z = map.z; map.lon = xToLon(lonToX(map.lon, z) - (p.x - o.x), z); map.lat = yToLat(latToY(map.lat, z) - (p.y - o.y), z);
+        if(map.follow) setFollow(false); else drawMap();
+      }
+    } else if(pts.size === 2) {
+      moved = true; const a = [...pts.values()], d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+      if(pinch && d / pinch > 1.6) { setZoom(map.z + 1); pinch = d; } else if(pinch && d / pinch < 0.62) { setZoom(map.z - 1); pinch = d; }
+    }
+  });
+  const up = e => {
+    clearTimeout(timer);
+    if(pts.has(e.pointerId) && pts.size === 1 && !moved) tapAt(pos(e));
+    pts.delete(e.pointerId); pinch = 0;
+  };
+  cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', e => { clearTimeout(timer); pts.delete(e.pointerId); });
+  cv.addEventListener('wheel', e => { e.preventDefault(); setZoom(map.z + (e.deltaY < 0 ? 1 : -1)); }, {passive: false});
+})();
+function tapAt(p) {
+  let best = null, bd = 28;
+  for(const h of hits) { const d = Math.hypot(h.x - p.x, h.y - p.y); if(d < bd) { bd = d; best = h; } }
+  if(!best) { closeSheet(); return; }
+  if(best.tg) showTarget(best.tg); else showWp(best.wp.id);
+}
+
+// ---------- Details sheet ----------
+let sheetTarget = null;
+function closeSheet() { sheetTarget = null; $('sheet').classList.remove('on'); }
+function targetHtml(g) {
+  const tags = (g.relayed ? ' <span class="tag">' + t('relayed') + '</span>' : '') + (g.sim ? ' <span class="tag">' + t('simulated') + '</span>' : '');
+  return '<div class="title">' + esc(g.name) + ' <span class="tag">' + t(TYPES[g.type]) + '</span>' + tags + '</div>' +
+    '<div class="sub">' + t('dist') + ' ' + fmtNm(g.dist) + ' NM &middot; ' + t('brg') + ' ' + pad3(g.brg) + '&deg;</div>' +
+    '<div class="sub">' + t('speed') + ' ' + g.sog.toFixed(1) + ' kn &middot; ' + t('course') + ' ' + pad3(g.cog) + '&deg;</div>' +
+    '<div class="sub">' + t('cpa') + ': ' + (g.cpaValid ? fmtNm(g.cpa) + ' NM ' + t('in') + ' ' + fmtT(g.tcpa) : t('noApproach')) + '</div>' +
+    '<div class="sub">' + t('seen') + ' ' + g.age + ' ' + t('ago') + (g.relayed ? '' : ' &middot; ' + t('signal') + ' ' + g.rssi + ' dBm') + '</div>';
+}
+function showTarget(id) {
+  const g = st && st.targets.find(x => x.id === id); if(!g) { closeSheet(); return; }
+  sheetTarget = id;
+  if(fingerDown && $('sheet').classList.contains('on')) return;
+  setHtml($('sheet'), targetHtml(g) + '<div class="row"><button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>');
+  $('sheet').classList.add('on');
+}
+function showWp(id) {
+  const p = ud.wps.find(x => x.id === id); if(!p) return;
+  sheetTarget = null;
+  $('sheet')._html = null;
+  $('sheet').innerHTML = '<h3>' + esc(p.name) + '</h3>' + wpSub(p) + '<div class="row">' + wpButtons(p) + '<button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>';
+  $('sheet').classList.add('on');
+}
+
+// ---------- Waypoints (kept on the node through /api/userdata) ----------
+let udVersion = null; // nodes with a screen of their own change the waypoints too: this tells when to reload them
+function saveUd() {
+  fetch('/api/userdata', {method: 'POST', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify(ud)})
+    .then(r => r.json()).then(j => { if(j && j.version !== undefined) udVersion = j.version; }).catch(() => {});
+}
+function loadUd() {
+  return fetch('/api/userdata').then(r => r.json()).then(j => {
+    if(j && Array.isArray(j.wps)) ud = {wps: j.wps, dest: j.dest || null, nextId: j.nextId || 1, routes: Array.isArray(j.routes) ? j.routes : [], route: j.route || null, nextRouteId: j.nextRouteId || 1};
+    if(j && j.version !== undefined) udVersion = j.version;
+  }).catch(() => {});
+}
+function addWaypoint(ll) {
+  const name = prompt(t('wpName'), 'WP' + ud.nextId); if(name === null) return;
+  ud.wps.push({id: ud.nextId, name: (name.trim() || 'WP' + ud.nextId).slice(0, 20), lat: ll.lat, lon: ll.lon}); ud.nextId++;
+  saveUd(); renderAll();
+}
+function wpSub(p) {
+  if(!st || !st.own.fix) return '<div class="sub">' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) + '</div>';
+  const d = distBrg(st.own.lat, st.own.lon, p.lat, p.lon);
+  return '<div class="sub">' + fmtNm(d.nm) + ' NM &middot; ' + pad3(d.brg) + '&deg; &middot; ' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) + '</div>';
+}
+function wpButtons(p) {
+  return '<button class="btn" onclick="wpGo(' + p.id + ')">' + (ud.dest === p.id ? t('stop') : t('goTo')) + '</button>';
+}
+function wpGo(id) {
+  ud.dest = ud.dest === id ? null : id;
+  // Going to a waypoint outside the followed route (or stopping) ends the route
+  const r = activeRoute(); if(r && (ud.dest === null || !r.wps.includes(ud.dest))) ud.route = null;
+  saveUd(); closeSheet(); renderAll();
+}
+function wpRename(id) { const p = ud.wps.find(x => x.id === id); const n = prompt(t('wpName'), p.name); if(n === null || !n.trim()) return; p.name = n.trim().slice(0, 20); saveUd(); renderAll(); }
+function wpDelete(id) { if(!confirm(t('delAsk'))) return; ud.wps = ud.wps.filter(x => x.id !== id); if(ud.dest === id) ud.dest = null; ud.routes.forEach(r => { r.wps = r.wps.filter(w => w !== id); }); saveUd(); renderAll(); }
+function wpShow(id) { const p = ud.wps.find(x => x.id === id); map.lat = p.lat; map.lon = p.lon; setFollow(false); showPage('pMap'); }
+function renderWp() {
+  setHtml($('wpList'), ud.wps.length ? ud.wps.map(p =>
+    '<div class="card"><div class="title">' + esc(p.name) + (ud.dest === p.id ? ' <span class="tag">' + t('dest') + '</span>' : '') + '</div>' + wpSub(p) +
+    '<div class="btns">' + wpButtons(p) + '<button class="btn sec" onclick="wpShow(' + p.id + ')">' + t('centerOn') + '</button>' +
+    '<button class="btn sec" onclick="wpRename(' + p.id + ')">' + t('rename') + '</button><button class="btn red" onclick="wpDelete(' + p.id + ')">' + t('del') + '</button></div></div>').join('')
+    : '<div class="empty">' + t('noWp') + '</div>');
+}
+$('wpHere').onclick = () => { if(st && st.own.fix) addWaypoint({lat: st.own.lat, lon: st.own.lon}); else alert(t('noFix')); };
+
+// ---------- Routes: ordered lists of waypoints; following one moves the destination from waypoint to waypoint ----------
+let editRoute = null;
+const activeRoute = () => ud.routes.find(r => r.id === ud.route) || null;
+const routeWps = r => r.wps.map(id => ud.wps.find(p => p.id === id)).filter(Boolean);
+function pathNm(pts) { let n = 0; for(let i = 1; i < pts.length; i++) n += distBrg(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon).nm; return n; }
+// Distance still to go on the followed route: to the current destination, then the legs after it
+function routeRemaining() {
+  const r = activeRoute(); if(!r || !st || !st.own.fix) return null;
+  const pts = routeWps(r), i = pts.findIndex(p => p.id === ud.dest); if(i < 0) return null;
+  return distBrg(st.own.lat, st.own.lon, pts[i].lat, pts[i].lon).nm + pathNm(pts.slice(i));
+}
+function advanceRoute() {
+  const r = activeRoute(); if(!r || !st || !st.own.fix) return;
+  const pts = routeWps(r), i = pts.findIndex(p => p.id === ud.dest);
+  if(i < 0 || distBrg(st.own.lat, st.own.lon, pts[i].lat, pts[i].lon).nm > ARRIVAL_NM) return;
+  if(i < pts.length - 1) { ud.dest = pts[i + 1].id; saveUd(); beep(1); }
+}
+function rtFollow(id) {
+  if(ud.route === id) { ud.route = null; ud.dest = null; }
+  else { const r = ud.routes.find(x => x.id === id), pts = routeWps(r); if(!pts.length) { alert(t('rtEmpty')); return; } ud.route = id; ud.dest = pts[0].id; }
+  saveUd(); renderAll();
+}
+function rtRename(id) { const r = ud.routes.find(x => x.id === id), n = prompt(t('rtName'), r.name); if(n === null || !n.trim()) return; r.name = n.trim().slice(0, 20); saveUd(); renderAll(); }
+function rtDelete(id) { if(!confirm(t('rtDelAsk'))) return; ud.routes = ud.routes.filter(x => x.id !== id); if(ud.route === id) { ud.route = null; ud.dest = null; } saveUd(); renderAll(); }
+function rtEdit(id) { editRoute = id; renderAll(); }
+function rtAdd(wp) { ud.routes.find(x => x.id === editRoute).wps.push(wp); saveUd(); renderAll(); }
+function rtRemove(i) { ud.routes.find(x => x.id === editRoute).wps.splice(i, 1); saveUd(); renderAll(); }
+function rtMove(i, d) { const w = ud.routes.find(x => x.id === editRoute).wps, j = i + d; if(j < 0 || j >= w.length) return; [w[i], w[j]] = [w[j], w[i]]; saveUd(); renderAll(); }
+function renderRoutes() {
+  const r = ud.routes.find(x => x.id === editRoute);
+  if(r) {
+    const pts = routeWps(r);
+    setHtml($('rtList'), '<div class="card"><div class="title">' + esc(r.name) + '</div><div class="sub">' + t('total') + ' ' + fmtNm(pathNm(pts)) + ' NM</div>' +
+      (pts.length ? pts.map((p, i) => '<div class="leg"><span>' + (i + 1) + '. ' + esc(p.name) + '</span><button onclick="rtMove(' + i + ',-1)">&uarr;</button><button onclick="rtMove(' + i + ',1)">&darr;</button><button onclick="rtRemove(' + i + ')">&times;</button></div>').join('') : '<div class="sub">' + t('rtEmpty') + '</div>') +
+      '<label>' + t('rtAddWp') + '</label>' + (ud.wps.length ? '<div class="chips">' + ud.wps.map(p => '<button class="btn sec" onclick="rtAdd(' + p.id + ')">+ ' + esc(p.name) + '</button>').join('') + '</div>' : '<div class="sub">' + t('rtNoWps') + '</div>') +
+      '<div class="btns"><button class="btn" onclick="rtEdit(null)">' + t('done') + '</button></div></div>');
+    return;
+  }
+  setHtml($('rtList'), ud.routes.length ? ud.routes.map(r => {
+    const pts = routeWps(r), on = ud.route === r.id, rem = on ? routeRemaining() : null;
+    return '<div class="card"><div class="title">' + esc(r.name) + (on ? ' <span class="tag">' + t('active') + '</span>' : '') + '</div>' +
+      '<div class="sub">' + pts.length + ' ' + t('legs') + ' &middot; ' + t('total') + ' ' + fmtNm(pathNm(pts)) + ' NM' + (rem !== null ? ' &middot; ' + t('remaining') + ' ' + fmtNm(rem) + ' NM' : '') + '</div>' +
+      '<div class="sub">' + pts.map(p => esc(p.name)).join(' &rarr; ') + '</div>' +
+      '<div class="btns"><button class="btn" onclick="rtFollow(' + r.id + ')">' + (on ? t('stop') : t('rtFollow')) + '</button><button class="btn sec" onclick="rtEdit(' + r.id + ')">' + t('edit') + '</button>' +
+      '<button class="btn sec" onclick="rtRename(' + r.id + ')">' + t('rename') + '</button><button class="btn red" onclick="rtDelete(' + r.id + ')">' + t('del') + '</button></div></div>';
+  }).join('') : '<div class="empty">' + t('noRoutes') + '</div>');
+}
+$('rtNew').onclick = () => {
+  const n = prompt(t('rtName'), t('route') + ' ' + ud.nextRouteId); if(n === null) return;
+  ud.routes.push({id: ud.nextRouteId, name: (n.trim() || t('route') + ' ' + ud.nextRouteId).slice(0, 20), wps: []}); editRoute = ud.nextRouteId; ud.nextRouteId++;
+  saveUd(); renderAll();
+};
+function showSeg(routes) {
+  $('segWp').classList.toggle('on', !routes); $('segRt').classList.toggle('on', routes);
+  $('wpPane').style.display = routes ? 'none' : ''; $('rtPane').style.display = routes ? '' : 'none'; renderAll();
+}
+$('segWp').onclick = () => showSeg(false);
+$('segRt').onclick = () => showSeg(true);
+
+// ---------- Nearby nodes ----------
+function showOnMap(id) { const g = st.targets.find(x => x.id === id); if(!g) return; map.lat = g.lat; map.lon = g.lon; setFollow(false); showPage('pMap'); showTarget(id); }
+function renderNearby() {
+  if(!st || !st.targets.length) { setHtml($('nearbyList'), '<div class="empty">' + t('noNodes') + '</div>'); return; }
+  const list = [...st.targets].sort((a, b) => (b.alarm - a.alarm) || (a.dist - b.dist));
+  setHtml($('nearbyList'), list.map(g => '<div class="card' + (g.alarm ? ' alarm' : '') + (g.stale ? ' stale' : '') + '">' + targetHtml(g) +
+    '<div class="btns"><button class="btn sec" onclick="showOnMap(\'' + g.id + '\')">' + t('centerOn') + '</button></div></div>').join(''));
+}
+
+// ---------- Compass: dark face, rotating rose, fixed red bow marker, green dot for the destination ----------
+function drawCompass() {
+  if(!$('pCompass').classList.contains('on')) return;
+  const {c, w, h} = fit($('compass'));
+  c.fillStyle = '#060d18'; c.fillRect(0, 0, w, h);
+  const landscape = w > h * 1.25, side = landscape ? Math.min(h, w * 0.6) : Math.min(w, h * 0.72);
+  const R = side / 2 - 22, cx = landscape ? side / 2 : w / 2, cy = landscape ? h / 2 : side / 2 + 6;
+  const own = st ? st.own : null, hdg = own && own.cogValid ? own.cog : 0;
+  c.strokeStyle = '#cfd8e3'; c.lineWidth = 3; c.beginPath(); c.arc(cx, cy, R, 0, 7); c.stroke();
+  for(let d = 0; d < 360; d += 10) {
+    const a = (d - hdg) * D2R, len = d % 90 === 0 ? R * 0.14 : d % 30 === 0 ? R * 0.1 : R * 0.05;
+    c.lineWidth = d % 30 === 0 ? 2.5 : 1.5; c.beginPath(); c.moveTo(cx + (R - len) * Math.sin(a), cy - (R - len) * Math.cos(a)); c.lineTo(cx + R * Math.sin(a), cy - R * Math.cos(a)); c.stroke();
+  }
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].forEach((s, i) => {
+    const a = (i * 45 - hdg) * D2R, main = i % 2 === 0;
+    c.font = (main ? '700 ' + Math.round(R * 0.2) : '500 ' + Math.round(R * 0.11)) + 'px sans-serif';
+    c.fillStyle = i === 0 ? '#e5383b' : main ? '#fff' : '#8a97a8';
+    c.fillText(s, cx + R * 0.72 * Math.sin(a), cy - R * 0.72 * Math.cos(a));
+  });
+  const dest = ud.wps.find(p => p.id === ud.dest); let d = null;
+  if(dest && own && own.fix) {
+    d = distBrg(own.lat, own.lon, dest.lat, dest.lon);
+    const a = (d.brg - hdg) * D2R, x = cx + R * Math.sin(a), y = cy - R * Math.cos(a);
+    c.fillStyle = '#2fd16b'; c.strokeStyle = '#fff'; c.lineWidth = 2; c.beginPath(); c.arc(x, y, Math.max(8, R * 0.07), 0, 7); c.fill(); c.stroke();
+  }
+  c.fillStyle = '#e5383b'; c.beginPath(); c.moveTo(cx, cy - R + R * 0.13); c.lineTo(cx - R * 0.08, cy - R - 10); c.lineTo(cx + R * 0.08, cy - R - 10); c.closePath(); c.fill();
+  const moving = own && own.moving;
+  c.fillStyle = moving ? '#fff' : '#8a97a8'; c.font = '700 ' + Math.round(R * 0.36) + 'px sans-serif';
+  c.fillText(own && own.cogValid ? pad3(hdg) + '°' : '---°', cx, cy - R * 0.04);
+  c.fillStyle = '#8a97a8'; c.font = Math.round(R * 0.1) + 'px sans-serif';
+  c.fillText(t('fromCog') + (moving ? '' : ' (' + t('stopped') + ')'), cx, cy + R * 0.22);
+  // Small data block: beside the rose in landscape, below it in portrait
+  const rows = [[t('speed'), own ? own.sog.toFixed(1) + ' kn' : '--', '#fff']];
+  const ar = activeRoute(), rem = routeRemaining();
+  if(ar) rows.push([t('route'), ar.name, '#e879f9']);
+  if(rem !== null) rows.push([t('remaining'), fmtNm(rem) + ' NM', '#e879f9']);
+  if(dest) {
+    rows.push([t('dest'), dest.name, '#2fd16b']);
+    if(d) {
+      rows.push([t('brg'), pad3(d.brg) + '°', '#2fd16b'], [t('dist'), fmtNm(d.nm) + ' NM', '#2fd16b']);
+      if(own.cogValid) { let turn = Math.round(d.brg - hdg); while(turn > 180) turn -= 360; while(turn < -180) turn += 360;
+        rows.push([t('steer'), Math.abs(turn) < 3 ? t('onCourse') : Math.abs(turn) + '° ' + (turn > 0 ? t('stbd') : t('port')), '#fff']); }
+    }
+  }
+  c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  if(landscape) {
+    let y = 30; const x = side + 8;
+    for(const r of rows) { c.fillStyle = '#8a97a8'; c.font = '13px sans-serif'; c.fillText(r[0].toUpperCase(), x, y); c.fillStyle = r[2]; c.font = '600 19px sans-serif'; c.fillText(r[1], x, y + 22); y += 50; }
+  } else {
+    const cols = 2, cw = w / cols; let i = 0;
+    for(const r of rows) { const x = 16 + (i % cols) * cw, y = side + 34 + Math.floor(i / cols) * 50;
+      c.fillStyle = '#8a97a8'; c.font = '13px sans-serif'; c.fillText(r[0].toUpperCase(), x, y); c.fillStyle = r[2]; c.font = '600 19px sans-serif'; c.fillText(r[1], x, y + 22); i++; }
+  }
+}
+
+// ---------- Alarm sound ----------
+let audio = null, lastBeep = 0;
+function unlockAudio() { if(!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {} } if(audio && audio.state === 'suspended') audio.resume(); }
+document.addEventListener('pointerdown', unlockAudio);
+function beep(n) {
+  if(!audio) return;
+  for(let i = 0; i < n; i++) {
+    const o = audio.createOscillator(), g = audio.createGain(), t0 = audio.currentTime + i * 0.24;
+    o.type = 'square'; o.frequency.value = 2700; g.gain.setValueAtTime(0.5, t0); g.gain.setValueAtTime(0, t0 + 0.13);
+    o.connect(g); g.connect(audio.destination); o.start(t0); o.stop(t0 + 0.14);
+  }
+  if(navigator.vibrate) navigator.vibrate([150, 100, 150, 100, 150]);
+}
+$('testSound').onclick = () => { unlockAudio(); beep(3); };
+// Silence button on the alarm banner: only for this alarm, the setting in Setup is not touched
+const mutedIds = new Set();
+$('mute').onclick = () => {
+  const alarms = st ? st.targets.filter(g => g.alarm) : [];
+  if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.add(g.id));
+  renderStatus();
+};
+
+// ---------- Status bar, alarm banner, setup info ----------
+function renderStatus() {
+  $('dot').classList.toggle('ok', !!(online && st && st.own.fix));
+  $('offline').classList.toggle('on', !online);
+  $('sHidden').style.display = cfg.share === false ? '' : 'none';
+  if(!st) return;
+  const o = st.own;
+  $('sSog').textContent = o.fix ? o.sog.toFixed(1) : '--.-';
+  $('sCog').textContent = o.cogValid ? pad3(o.cog) : '---';
+  $('sTime').textContent = o.time + ' UTC';
+  const dest = ud.wps.find(p => p.id === ud.dest);
+  if(dest && o.fix) { const d = distBrg(o.lat, o.lon, dest.lat, dest.lon); $('sDest').innerHTML = '&#9873; ' + pad3(d.brg) + '&deg; ' + fmtNm(d.nm) + ' NM'; } else $('sDest').textContent = '';
+  const alarms = st.targets.filter(g => g.alarm).sort((a, b) => a.tcpa - b.tcpa), worst = alarms[0];
+  // Temporary silence: it lasts while the silenced nodes stay in alarm; a new node in alarm sounds again
+  for(const id of [...mutedIds]) if(!alarms.some(g => g.id === id)) mutedIds.delete(id);
+  const silenced = alarms.length > 0 && alarms.every(g => mutedIds.has(g.id));
+  $('alarm').classList.toggle('on', !!worst);
+  $('alarm').classList.toggle('muted', silenced);
+  if(worst) {
+    $('alarmText').textContent = t('collision') + ': ' + worst.name + ' ' + fmtNm(worst.cpa) + ' NM ' + t('in') + ' ' + fmtT(worst.tcpa);
+    $('mute').textContent = silenced ? t('muted') : t('mute');
+    if(cfg.sound && !silenced && Date.now() - lastBeep > 3000) { lastBeep = Date.now(); beep(3); }
+  }
+}
+function renderInfo() {
+  if(!st) return;
+  const o = st.own, rows = [
+    [t('iGps'), !st.gpsBaud ? t('noGps') : (o.fix ? t('iFix') + ', ' + o.sats + ' ' + t('iSats') + ', HDOP ' + o.hdop : t('noFix')) + ' (' + st.gpsBaud + ' baud)'],
+    [t('iLora'), (st.lora.ok ? 'ok' : 'KO') + ', ' + st.lora.freq + ' MHz'],
+    ['', t('iSent') + ' ' + st.lora.tx + ', ' + t('iRecv') + ' ' + st.lora.rx + ', ' + t('iRelay') + ' ' + st.lora.relay],
+    [t('iSd'), st.sd ? t('yes') : t('no')], [t('iBat'), st.battery.toFixed(2) + ' V'],
+    [t('iWifi'), cfg.net === 2 ? (st.sta ? t('onBoat') + ': ' + st.staIp + ', ' + (cfg.host || '') : t('boatLost')) : t('nodeWifi')],
+    [t('iNet'), (cfg.ssid || '') + ' (' + st.apIp + ')'], [t('iId'), cfg.id || ''], [t('iVer'), cfg.version || '']];
+  $('info').innerHTML = rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join('');
+}
+function renderAll(fromPoll) {
+  renderStatus(); drawMap(); drawCompass();
+  if(fromPoll === true && fingerDown) return;
+  if($('pNearby').classList.contains('on')) renderNearby();
+  if($('pWp').classList.contains('on')) { renderWp(); renderRoutes(); }
+  if($('pSetup').classList.contains('on')) renderInfo();
+  if(sheetTarget) showTarget(sheetTarget);
+}
+
+// ---------- Setup form ----------
+function buildTypes() {
+  $('fTypes').innerHTML = TYPES.map((k, i) => '<label class="' + (cfg.type === i ? 'on' : '') + '"><input type="radio" name="type" value="' + i + '"' + (cfg.type === i ? ' checked' : '') + '><canvas width="88" height="88"></canvas>' + t(k) + '</label>').join('');
+  $('fTypes').querySelectorAll('label').forEach((l, i) => {
+    const c = l.querySelector('canvas').getContext('2d'); c.setTransform(2, 0, 0, 2, 0, 0); drawSymbol(c, i, 22, 22, 0, '#3da5ff', 13, false);
+    l.querySelector('input').onchange = () => { cfg.type = i; buildTypes(); };
+  });
+}
+// The three connection scenarios; choosing one also picks the matching chart source
+function netChanged(setTiles) {
+  $('netBox').style.display = cfg.apOnly ? 'none' : '';
+  const n = +$('fNet').value;
+  $('boatBox').style.display = n === 2 ? '' : 'none';
+  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + t('hintBoat2');
+  $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
+  if(setTiles) $('fTiles').value = n === 0 ? 1 : 0;
+}
+$('fNet').onchange = () => netChanged(true);
+function fillForm() {
+  $('fLang').value = lang; $('fName').value = cfg.name; $('fShare').checked = cfg.share !== false; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
+  $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
+  buildTypes();
+}
+$('fLang').onchange = () => { lang = $('fLang').value; applyLang(); netChanged(false); };
+$('save').onclick = () => {
+  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, share: $('fShare').checked ? 1 : 0, alarmRange: $('fRange').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
+    net: $('fNet').value, staSsid: $('fStaSsid').value});
+  if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
+  if($('fPass').value) b.set('wifiPass', $('fPass').value);
+  fetch('/api/config', {method: 'POST', body: b}).then(r => r.json()).then(j => {
+    cfg = j; lang = j.lang; tiles.clear(); applyLang(); fillForm();
+    $('saved').textContent = j.restart ? t('restarting') : t('saved'); setTimeout(() => { $('saved').textContent = ''; }, j.restart ? 30000 : 2500);
+  }).catch(() => { $('saved').textContent = t('saveFail'); });
+};
+
+// ---------- Pages ----------
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('on', p.id === id));
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.p === id));
+  if(id !== 'pMap') closeSheet();
+  renderAll();
+}
+document.querySelectorAll('#nav button').forEach(b => { b.onclick = () => showPage(b.dataset.p); });
+window.addEventListener('resize', renderAll);
+
+// ---------- Data from the node, once a second ----------
+function poll() {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 2500);
+  fetch('/api/state', {signal: ctl.signal}).then(r => r.json()).then(j => {
+    clearTimeout(timer); st = j; online = true;
+    if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
+    if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
+    advanceRoute();
+    renderAll(true);
+  }).catch(() => { clearTimeout(timer); online = false; renderStatus(); });
+}
+Promise.all([
+  fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),
+  loadUd()
+]).then(() => { applyLang(); fillForm(); poll(); setInterval(poll, 1000); });
+</script>
+</body>
+</html>

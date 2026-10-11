@@ -13,12 +13,16 @@
 #include <TJpg_Decoder.h>
 #include <TinyGPS++.h>
 #include <RadioLib.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
 #include <vector>
 #include <math.h>
 #include "board.h"
 #include "traffic_packet.h"
+#include "web_page.h"
 
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.3.0"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -189,11 +193,24 @@ struct Target {
   bool relayed = false;
   bool cpaValid = false, alarm = false, muted = false;
   unsigned long mutedAt = 0;
-  double cpaNm = 0, tcpaS = 0;
+  double cpaNm = 0, tcpaS = 0, distNm = 0, brg = 0;
 };
 std::vector<Target> targets;
 bool radioOk = false, radioTx = false, radioTxIsRelay = false;
 bool sharePosition = true;      // transmit our own position; when off the node only listens and relays
+uint8_t nodeType = NODE_TYPE_BOAT;
+uint8_t alarmRangeNm = 3;       // only nodes inside this distance can raise the collision alarm (3, 6 or 12)
+
+// Web app for a phone, served over the board's own WiFi network (same app as the Heltec node)
+#define WEB_ROUTES_FILE "/webroutes.json"
+WebServer server(80);
+bool wifiOn = true, wifiRunning = false;
+char wifiPass[33] = "navplotter";
+uint8_t webTiles = 1;           // chart source of the web app: 0 online, 1 this board's SD card, 2 none
+bool webSound = true;
+String apSsid;
+String webRoutes = "\"routes\":[],\"route\":null,\"nextRouteId\":1"; // routes exist only in the web app for now
+uint32_t udVersion = 1;         // goes up whenever waypoints or destination change, so the phone reloads them
 unsigned long radioTxStart = 0, radioNextTx = 0, alarmNextBurst = 0;
 uint32_t txCount = 0, rxCount = 0, relayCount = 0, myId = 0;
 uint8_t txSeq = 0;
@@ -274,11 +291,18 @@ double metersPerPixel() { return 156543.03392 * cos(mapLat * DEG_TO_RAD) / (doub
 // Settings (internal flash) and waypoints (SD card, same file format as the T-Deck plotter)
 // ============================================
 void saveSettings() {
+  udVersion++; // the destination is part of what the phone shows
   prefs.begin("navplotter", false);
   prefs.putBool("it", langIt);
   prefs.putString("name", boatName);
   prefs.putBool("sound", soundOn);
   prefs.putBool("share", sharePosition);
+  prefs.putUChar("type", nodeType);
+  prefs.putUChar("range", alarmRangeNm);
+  prefs.putBool("wifi", wifiOn);
+  prefs.putString("pass", wifiPass);
+  prefs.putUChar("wtiles", webTiles);
+  prefs.putBool("wsound", webSound);
   prefs.putInt("zoom", zoom);
   prefs.putInt("dest", destId);
   prefs.putBool("calok2", calOk);
@@ -296,11 +320,23 @@ void loadSettings() {
   destId = prefs.getInt("dest", -1);
   calOk = prefs.getBool("calok2", false);
   if(calOk) prefs.getBytes("cal2", cal, sizeof(cal));
+  nodeType = prefs.getUChar("type", NODE_TYPE_BOAT);
+  alarmRangeNm = prefs.getUChar("range", 3);
+  wifiOn = prefs.getBool("wifi", true);
+  String pass = prefs.getString("pass", "navplotter");
+  webTiles = prefs.getUChar("wtiles", 1);
+  webSound = prefs.getBool("wsound", true);
   prefs.end();
   if(boatName[0] == '\0') strcpy(boatName, "BOAT");
+  if(nodeType > NODE_TYPE_OBJECT) nodeType = NODE_TYPE_BOAT;
+  if(alarmRangeNm != 3 && alarmRangeNm != 6 && alarmRangeNm != 12) alarmRangeNm = 3;
+  if(pass.length() < 8 || pass.length() > 32) pass = "navplotter";
+  strcpy(wifiPass, pass.c_str());
+  if(webTiles > 2) webTiles = 1;
 }
 
 void saveWaypoints() {
+  udVersion++;
   if(!sdOk) return;
   File f = SD.open("/waypoints.txt", FILE_WRITE);
   if(!f) return;
@@ -643,7 +679,7 @@ void sendPosition() {
   pkt.ttl = MESH_TTL;
   pkt.id = myId;
   pkt.seq = txSeq++;
-  pkt.flags = NODE_TYPE_BOAT << TRAFFIC_TYPE_SHIFT;
+  pkt.flags = (nodeType & TRAFFIC_TYPE_MASK) << TRAFFIC_TYPE_SHIFT;
   pkt.lat = (int32_t)lround(gps.location.lat() * 1e7);
   pkt.lon = (int32_t)lround(gps.location.lng() * 1e7);
   pkt.cog = (uint16_t)lround(heading() * 10);
@@ -732,7 +768,10 @@ void handleRadio() {
 void updateTarget(Target& t) {
   t.cpaValid = false;
   t.alarm = false;
-  if(!gpsFix() || millis() - t.lastSeen > TARGET_STALE_MS) return;
+  if(!gpsFix()) return;
+  t.distNm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
+  t.brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);
+  if(millis() - t.lastSeen > TARGET_STALE_MS) return;
   const double KN = 0.514444; // knots -> m/s
   double age = (millis() - t.lastSeen) / 1000.0, lat0 = gps.location.lat() * DEG_TO_RAD;
   double ownSog = moving() ? gps.speed.knots() * KN : 0, ownCog = heading() * DEG_TO_RAD;
@@ -748,7 +787,7 @@ void updateTarget(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = t.distNm <= alarmRangeNm && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
 }
 
 const Target* worstTarget() {
@@ -791,6 +830,195 @@ void silenceAlarm() {
   alarmSilenced = !allMuted;
   if(alarmSilenced) beepsLeft = 0; else alarmNextBurst = millis();
   requestRedraw();
+}
+
+// ============================================
+// Web app over the board's own WiFi
+// ============================================
+String jsonText(const char* text) {
+  String out;
+  for(const char* c = text; *c; c++) {
+    if(*c == '"' || *c == '\\') { out += '\\'; out += *c; }
+    else if((uint8_t)*c >= ' ' && (uint8_t)*c < 127) out += *c;
+  }
+  return out;
+}
+
+void sendJson(const String& json) {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", json);
+}
+
+void webRoot() {
+  server.sendHeader("Content-Encoding", "gzip");
+  server.sendHeader("Cache-Control", "no-cache");
+  server.send_P(200, "text/html; charset=utf-8", (const char*)INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
+}
+
+String configJson() {
+  char buf[200];
+  snprintf(buf, sizeof(buf), "{\"type\":%u,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",",
+    nodeType, sharePosition ? "true" : "false", alarmRangeNm, langIt ? "it" : "en", webTiles, webSound ? "true" : "false", (unsigned long)myId, FW_VERSION);
+  // apOnly: this node has only its own WiFi network, so the web app hides the connection choices
+  return String(buf) + "\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+}
+
+void webGetConfig() { sendJson(configJson()); }
+
+void webPostConfig() {
+  bool restart = false;
+  if(server.hasArg("name")) {
+    String n = server.arg("name");
+    n.trim();
+    n.replace(",", " ");
+    if(n.length() > 0) { strncpy(boatName, n.c_str(), BOAT_NAME_LEN - 1); boatName[BOAT_NAME_LEN - 1] = '\0'; }
+  }
+  if(server.hasArg("type")) { int v = server.arg("type").toInt(); if(v >= NODE_TYPE_BOAT && v <= NODE_TYPE_OBJECT) nodeType = v; }
+  if(server.hasArg("share")) sharePosition = server.arg("share") == "1";
+  if(server.hasArg("alarmRange")) { int v = server.arg("alarmRange").toInt(); if(v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
+  if(server.hasArg("lang")) langIt = server.arg("lang") == "it";
+  if(server.hasArg("tiles")) { int v = server.arg("tiles").toInt(); if(v >= 0 && v <= 2) webTiles = v; }
+  if(server.hasArg("sound")) webSound = server.arg("sound") == "1";
+  if(server.hasArg("wifiPass")) {
+    String p = server.arg("wifiPass");
+    if(p.length() >= 8 && p.length() <= 32 && p != wifiPass) { strcpy(wifiPass, p.c_str()); restart = true; }
+  }
+  saveSettings();
+  requestRedraw();
+  String json = configJson();
+  json.remove(json.length() - 1);
+  sendJson(json + (restart ? ",\"restart\":true}" : ",\"restart\":false}"));
+  if(restart) { delay(500); ESP.restart(); } // the new WiFi password applies after a restart
+}
+
+void webState() {
+  String json;
+  json.reserve(600 + targets.size() * 270);
+  char buf[330];
+  bool fix = gpsFix();
+  float hdg = heading();
+  snprintf(buf, sizeof(buf),
+    "{\"own\":{\"fix\":%s,\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"cogValid\":%s,\"moving\":%s,\"sats\":%d,\"hdop\":%.1f,\"time\":\"%02d:%02d:%02d\"},\"targets\":[",
+    fix ? "true" : "false", fix ? gps.location.lat() : 0.0, fix ? gps.location.lng() : 0.0, gps.speed.isValid() ? gps.speed.knots() : 0.0, hdg,
+    courseKnown ? "true" : "false", moving() ? "true" : "false", gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
+    gps.hdop.isValid() ? gps.hdop.hdop() : 99.9, gps.time.isValid() ? gps.time.hour() : 0, gps.time.isValid() ? gps.time.minute() : 0, gps.time.isValid() ? gps.time.second() : 0);
+  json += buf;
+  bool first = true;
+  for(const auto& t : targets) {
+    snprintf(buf, sizeof(buf),
+      "%s{\"id\":\"%08lX\",\"name\":\"%s\",\"type\":%u,\"sim\":false,\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"age\":%lu,"
+      "\"rssi\":%.0f,\"relayed\":%s,\"stale\":%s,\"dist\":%.3f,\"brg\":%.0f,\"cpaValid\":%s,\"cpa\":%.3f,\"tcpa\":%.0f,\"alarm\":%s}",
+      first ? "" : ",", (unsigned long)t.id, jsonText(t.name).c_str(), t.type, t.lat, t.lon, t.sog, t.cog, (millis() - t.lastSeen) / 1000,
+      t.rssi, t.relayed ? "true" : "false", millis() - t.lastSeen > TARGET_STALE_MS ? "true" : "false", t.distNm, t.brg,
+      t.cpaValid ? "true" : "false", t.cpaNm, t.tcpaS, t.alarm ? "true" : "false");
+    json += buf;
+    first = false;
+  }
+  const Target* worst = worstTarget();
+  snprintf(buf, sizeof(buf),
+    "],\"alarm\":%s,\"alarmName\":\"%s\",\"lora\":{\"ok\":%s,\"tx\":%lu,\"rx\":%lu,\"relay\":%lu,\"freq\":%.3f},"
+    "\"gpsBaud\":%lu,\"sd\":%s,\"battery\":%.2f,\"uptime\":%lu,\"sta\":false,\"staIp\":\"\",\"apIp\":\"192.168.4.1\",\"udVersion\":%lu}",
+    worst ? "true" : "false", worst ? jsonText(worst->name).c_str() : "", radioOk ? "true" : "false", (unsigned long)txCount, (unsigned long)rxCount,
+    (unsigned long)relayCount, LORA_FREQ, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)udVersion);
+  json += buf;
+  sendJson(json);
+}
+
+// Waypoints and destination are the board's own, shared with its touch screen. Routes exist only in the
+// web app for now and are kept as a piece of JSON.
+void webGetUserdata() {
+  String json = "{\"wps\":[";
+  json.reserve(200 + waypoints.size() * 90 + webRoutes.length());
+  char buf[120];
+  bool first = true;
+  for(const auto& w : waypoints) {
+    snprintf(buf, sizeof(buf), "%s{\"id\":%d,\"name\":\"%s\",\"lat\":%.7f,\"lon\":%.7f}", first ? "" : ",", w.id, jsonText(w.name).c_str(), w.lat, w.lon);
+    json += buf;
+    first = false;
+  }
+  json += "],\"dest\":" + (destId >= 0 ? String(destId) : String("null")) + ",\"nextId\":" + String(nextWpId()) + "," + webRoutes + ",\"version\":" + String(udVersion) + "}";
+  sendJson(json);
+}
+
+void webPostUserdata() {
+  JsonDocument doc;
+  if(deserializeJson(doc, server.arg("plain")) || !doc["wps"].is<JsonArray>()) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+  waypoints.clear();
+  for(JsonObject o : doc["wps"].as<JsonArray>()) {
+    Waypoint w;
+    w.id = o["id"] | 0;
+    String n = o["name"] | "WP";
+    n.replace(",", " "); // names are stored in a comma-separated file
+    strncpy(w.name, n.c_str(), NAME_LEN - 1);
+    w.lat = o["lat"] | 0.0;
+    w.lon = o["lon"] | 0.0;
+    if(w.id > 0) waypoints.push_back(w);
+  }
+  destId = doc["dest"].is<int>() ? doc["dest"].as<int>() : -1;
+  if(destId >= 0 && !findWp(destId)) destId = -1;
+  // The routes part, kept as text
+  JsonDocument r;
+  r["routes"] = doc["routes"];
+  r["route"] = doc["route"];
+  r["nextRouteId"] = doc["nextRouteId"] | 1;
+  String rs;
+  serializeJson(r, rs);
+  if(rs.length() > 2 && rs.length() < 12000) {
+    webRoutes = rs.substring(1, rs.length() - 1);
+    if(sdOk) { File f = SD.open(WEB_ROUTES_FILE, FILE_WRITE); if(f) { f.print(webRoutes); f.close(); } }
+  }
+  selectedWp = min(selectedWp, (int)waypoints.size() - 1);
+  saveWaypoints();
+  saveSettings();
+  requestRedraw();
+  sendJson(String("{\"ok\":true,\"version\":") + udVersion + "}");
+}
+
+// Chart tiles from the SD card, for the map in the web app
+void webNotFound() {
+  String uri = server.uri();
+  if(sdOk && uri.startsWith("/tiles/") && uri.endsWith(".jpg") && uri.indexOf("..") < 0 && uri.length() < 48) {
+    File f = SD.open(uri);
+    if(f && !f.isDirectory()) {
+      server.sendHeader("Cache-Control", "max-age=86400");
+      server.streamFile(f, "image/jpeg");
+      f.close();
+      return;
+    }
+    if(f) f.close();
+  }
+  server.send(404, "text/plain", "Not found");
+}
+
+void startWifi() {
+  if(wifiRunning) return;
+  apSsid = String("NavPlotter-") + boatName;
+  apSsid.replace(" ", "_");
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(apSsid.c_str(), wifiPass);
+  static bool routesSet = false;
+  if(!routesSet) {
+    routesSet = true;
+    server.on("/", HTTP_GET, webRoot);
+    server.on("/api/state", HTTP_GET, webState);
+    server.on("/api/config", HTTP_GET, webGetConfig);
+    server.on("/api/config", HTTP_POST, webPostConfig);
+    server.on("/api/userdata", HTTP_GET, webGetUserdata);
+    server.on("/api/userdata", HTTP_POST, webPostUserdata);
+    server.onNotFound(webNotFound);
+  }
+  server.begin();
+  wifiRunning = true;
+  Serial.printf("WiFi network %s, open http://%s (free heap %u)\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str(), ESP.getFreeHeap());
+}
+
+void stopWifi() {
+  if(!wifiRunning) return;
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiRunning = false;
 }
 
 // ============================================
@@ -1253,7 +1481,7 @@ void drawSetupPage() {
     follow ? TR("[X] Follow boat", "[X] Segui barca") : TR("[ ] Follow boat", "[ ] Segui barca"),
     TR("Calibrate touch", "Calibra il touch"),
     sharePosition ? TR("[X] Share position", "[X] Trasmetti pos.") : TR("[ ] Share position", "[ ] Trasmetti pos."),
-    String("v") + FW_VERSION + "  " + String(batteryVolts(), 2) + " V"};
+    wifiOn ? "[X] WiFi" : "[ ] WiFi"};
   for(int i = 0; i < SETUP_ITEMS; i++) {
     int x, y;
     setupButtonRect(i, x, y);
@@ -1271,6 +1499,10 @@ void drawSetupPage() {
   if(!radioOk) snprintf(buf, sizeof(buf), "LoRa: %s", TR("radio not found", "radio non trovata"));
   else snprintf(buf, sizeof(buf), "LoRa: ok  TX %lu  RX %lu", (unsigned long)txCount, (unsigned long)rxCount);
   cv.text(buf, 6, y + 32, 2, C_BLACK, C_WHITE);
+  // How to reach the web app from a phone, or version and battery when the WiFi is off
+  if(wifiRunning) snprintf(buf, sizeof(buf), "WiFi %s  pw %s  192.168.4.1", apSsid.c_str(), wifiPass);
+  else snprintf(buf, sizeof(buf), "v%s  %s %.2f V", FW_VERSION, TR("battery", "batteria"), batteryVolts());
+  cv.text(buf, 6, y + 50, 1, C_DIM, C_WHITE);
 }
 
 void nameEntered(const String& s) {
@@ -1296,6 +1528,12 @@ void tapSetupPage(int x, int y) {
         sharePosition = !sharePosition;
         saveSettings();
         showToast(sharePosition ? TR("Position shared with the others", "Posizione trasmessa agli altri") : TR("Hidden: not transmitting", "Nascosta: non trasmetto"));
+        break;
+      case 7:
+        wifiOn = !wifiOn;
+        saveSettings();
+        if(wifiOn) startWifi(); else stopWifi();
+        showToast(wifiOn ? TR("WiFi on: see below", "WiFi acceso: vedi sotto") : TR("WiFi off", "WiFi spento"));
         break;
     }
     return;
@@ -1485,6 +1723,11 @@ void setup() {
   for(int i = 0; i < 20 && held; i++) { held = touchPressed(); delay(40); }
   if(!calOk || held) calibrateTouch();
   initRadio();
+  if(sdOk && SD.exists(WEB_ROUTES_FILE)) {
+    File f = SD.open(WEB_ROUTES_FILE);
+    if(f) { String r = f.readString(); f.close(); if(r.startsWith("\"routes\"") && r.length() < 12000) webRoutes = r; }
+  }
+  if(wifiOn) startWifi();
   detectGpsBaud();
   beep(1);
   requestRedraw();
@@ -1496,5 +1739,6 @@ void loop() {
   handleRadio();
   updateTraffic();
   handleSound();
+  if(wifiRunning) server.handleClient();
   updateDisplay();
 }

@@ -26,6 +26,15 @@ The board was identified with the small firmware in `probe/`: ESP32-D0WD-V3 with
 - **COMP:** heading-up compass with the bearing of the destination. Heading is the GPS course.
 - **SET:** boat name, language, sound, follow mode, touch calibration, position sharing (off = the boat is hidden from the others but still receives and relays them), status.
 
+### From a phone
+
+The board also creates its own WiFi network and serves a web app, the same one as the Heltec NavPlotter node: map, compass, nearby nodes, waypoints, routes and setup on the phone's bigger screen.
+
+1. Join the WiFi network `NavPlotter-<boat name>` (default password `navplotter`; the SET page on the board shows both).
+2. Open `http://192.168.4.1`.
+
+The phone gets its charts from the board's SD card, so nothing needs internet. Waypoints and destination are shared: what is added on the touch screen shows up on the phone and the other way round. Routes exist only in the web app for now. The WiFi can be switched off in SET.
+
 Waypoints are stored on the SD card in the same file as the T-Deck plotter (`waypoints.txt`); settings are kept in the board's own memory.
 
 ## How the screen is drawn
@@ -33,6 +42,9 @@ Waypoints are stored on the SD card in the same file as the T-Deck plotter (`way
 A full-screen 16-bit buffer does not fit in memory on this board, and drawing straight to the display flickers. The screen is therefore drawn off-screen in three 320x80 strips, which do fit, and then pushed to the display.
 
 ## Building
+
+The web app is `web/index.html`; `tools/embed_web.py` compresses it into `src/web_page.h` before every build. It is a copy of the one in the Heltec node project and should be kept in step with it.
+
 
 ```
 ~/.platformio/penv/bin/pio run -t upload
