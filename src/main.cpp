@@ -12,11 +12,13 @@
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
 #include <TinyGPS++.h>
+#include <RadioLib.h>
 #include <vector>
 #include <math.h>
 #include "board.h"
+#include "traffic_packet.h"
 
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.2.0"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -25,7 +27,7 @@
 #define STATUS_H 20
 #define MAP_W (SCREEN_W - SIDEBAR_W)
 #define MAP_H (SCREEN_H - STATUS_H)
-#define SIDE_BTN_COUNT 6
+#define SIDE_BTN_COUNT 7
 #define SIDE_BTN_H (SCREEN_H / SIDE_BTN_COUNT)
 
 // ---- Colours ----
@@ -54,7 +56,19 @@
 #define MOVING_MIN_KNOTS 0.5
 #define ARRIVAL_NM 0.05
 #define NAME_LEN 20
-#define BOAT_NAME_LEN 12
+
+// ---- LoRa traffic (same packet, radio settings and mesh as the T-Deck plotter and the Heltec node) ----
+#define LORA_POWER_DBM 17
+#define LORA_TX_MOVING_MS 10000UL
+#define LORA_TX_STOPPED_MS 30000UL
+#define TARGET_STALE_MS 60000UL
+#define TARGET_EXPIRE_MS 180000UL
+#define MAX_TARGETS 20
+// Collision alarm: closest point of approach below CPA_ALARM_NM within CPA_ALARM_S seconds
+#define CPA_ALARM_NM 0.1
+#define CPA_ALARM_S 300
+#define ALARM_REPEAT_MS 3000UL
+#define ALARM_MUTE_MS 60000UL   // a tap on the red band silences the alarm for a minute
 
 // Texts: English first, Italian second
 bool langIt = false;
@@ -138,7 +152,7 @@ struct Waypoint {
   bool visible = true;
 };
 
-enum Page {PAGE_MAP, PAGE_WAYPOINTS, PAGE_COMPASS, PAGE_SETUP, PAGE_KEYBOARD};
+enum Page {PAGE_MAP, PAGE_WAYPOINTS, PAGE_COMPASS, PAGE_NEARBY, PAGE_SETUP, PAGE_KEYBOARD};
 Page page = PAGE_MAP;
 
 Preferences prefs;
@@ -162,6 +176,28 @@ float lastCourse = 0;
 bool courseKnown = false;
 char boatName[BOAT_NAME_LEN] = "";
 bool soundOn = true;
+
+// Other nodes received over LoRa
+struct Target {
+  uint32_t id = 0;
+  char name[BOAT_NAME_LEN] = "";
+  uint8_t type = NODE_TYPE_BOAT;
+  double lat = 0, lon = 0;
+  float cog = 0, sog = 0;       // degrees, knots
+  unsigned long lastSeen = 0;
+  float rssi = 0;
+  bool relayed = false;
+  bool cpaValid = false, alarm = false, muted = false;
+  unsigned long mutedAt = 0;
+  double cpaNm = 0, tcpaS = 0;
+};
+std::vector<Target> targets;
+bool radioOk = false, radioTx = false, radioTxIsRelay = false;
+bool sharePosition = true;      // transmit our own position; when off the node only listens and relays
+unsigned long radioTxStart = 0, radioNextTx = 0, alarmNextBurst = 0;
+uint32_t txCount = 0, rxCount = 0, relayCount = 0, myId = 0;
+uint8_t txSeq = 0;
+bool alarmActive = false, alarmSilenced = false;
 
 bool needsRedraw = true;
 unsigned long lastFullDraw = 0, lastStatusDraw = 0;
@@ -242,6 +278,7 @@ void saveSettings() {
   prefs.putBool("it", langIt);
   prefs.putString("name", boatName);
   prefs.putBool("sound", soundOn);
+  prefs.putBool("share", sharePosition);
   prefs.putInt("zoom", zoom);
   prefs.putInt("dest", destId);
   prefs.putBool("calok2", calOk);
@@ -254,6 +291,7 @@ void loadSettings() {
   langIt = prefs.getBool("it", false);
   prefs.getString("name", boatName, sizeof(boatName));
   soundOn = prefs.getBool("sound", true);
+  sharePosition = prefs.getBool("share", true);
   zoom = prefs.getInt("zoom", ZOOM_DEFAULT);
   destId = prefs.getInt("dest", -1);
   calOk = prefs.getBool("calok2", false);
@@ -574,6 +612,185 @@ void handleTouch() {
 }
 
 // ============================================
+// LoRa traffic
+// ============================================
+// The radio (RFM95W, SX1276) shares the SPI bus with the SD card. Its interrupt pin is not wired, because
+// the board has no pin to spare: the radio is asked every loop whether a packet arrived or went out.
+SX1276 radio = new Module(PIN_LORA_CS, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC, sdSpi);
+#define SX127X_IRQ_RX_DONE 0x40
+#define SX127X_IRQ_TX_DONE 0x08
+
+void initRadio() {
+  uint64_t mac = ESP.getEfuseMac();
+  myId = (uint32_t)(mac >> 16) ^ (uint32_t)mac;
+  int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER_DBM, LORA_PREAMBLE, 0);
+  if(state == RADIOLIB_ERR_NONE) {
+    radio.setCRC(true);
+    radioOk = radio.startReceive() == RADIOLIB_ERR_NONE;
+  }
+  radioNextTx = millis() + 5000 + random(0, 3000);
+  Serial.printf("LoRa %s (%d): %.3f MHz, SF%d, id %08lX\n", radioOk ? "ready" : "NOT available", state, LORA_FREQ, LORA_SF, (unsigned long)myId);
+}
+
+void sendPosition() {
+  TrafficPacket pkt;
+  memset(&pkt, 0, sizeof(pkt));
+  pkt.magic[0] = 'N'; pkt.magic[1] = 'P';
+  pkt.version = 1;
+  pkt.ttl = MESH_TTL;
+  pkt.id = myId;
+  pkt.seq = txSeq++;
+  pkt.flags = NODE_TYPE_BOAT << TRAFFIC_TYPE_SHIFT;
+  pkt.lat = (int32_t)lround(gps.location.lat() * 1e7);
+  pkt.lon = (int32_t)lround(gps.location.lng() * 1e7);
+  pkt.cog = (uint16_t)lround(heading() * 10);
+  pkt.sog = moving() ? (uint16_t)lround(gps.speed.knots() * 100) : 0;
+  strncpy(pkt.name, boatName, BOAT_NAME_LEN - 1);
+  if(radio.startTransmit((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
+    radioTx = true; radioTxIsRelay = false; radioTxStart = millis();
+  } else {
+    radio.startReceive();
+  }
+  // A little random delay keeps two nodes from always transmitting at the same instant
+  radioNextTx = millis() + (moving() ? LORA_TX_MOVING_MS : LORA_TX_STOPPED_MS) + random(0, 2000);
+}
+
+void processPacket(const TrafficPacket& pkt, float rssi) {
+  if(pkt.magic[0] != 'N' || pkt.magic[1] != 'P' || pkt.version != 1 || pkt.id == myId) return;
+  // Mesh: drop copies already received (and if somebody else relayed it, we do not need to)
+  if(meshAlreadySeen(pkt.id, pkt.seq)) { meshCancelRelay(pkt.id, pkt.seq); return; }
+  rxCount++;
+  meshQueueRelay(pkt);
+
+  Target* t = nullptr;
+  for(auto& e : targets) if(e.id == pkt.id) t = &e;
+  if(!t) {
+    if((int)targets.size() >= MAX_TARGETS) return;
+    targets.push_back(Target());
+    t = &targets.back();
+    t->id = pkt.id;
+  }
+  strncpy(t->name, pkt.name, BOAT_NAME_LEN - 1);
+  t->name[BOAT_NAME_LEN - 1] = '\0';
+  for(char* c = t->name; *c; c++) if(*c < ' ' || *c > '~') *c = '?';
+  t->type = (pkt.flags >> TRAFFIC_TYPE_SHIFT) & TRAFFIC_TYPE_MASK;
+  if(t->type > NODE_TYPE_OBJECT) t->type = NODE_TYPE_BOAT;
+  t->lat = pkt.lat / 1e7;
+  t->lon = pkt.lon / 1e7;
+  t->cog = pkt.cog / 10.0;
+  t->sog = pkt.sog / 100.0;
+  t->lastSeen = millis();
+  t->rssi = rssi;
+  t->relayed = pkt.ttl < MESH_TTL;
+  Serial.printf("LoRa RX %s%s %.5f %.5f %.1f kn %.0f deg, RSSI %.0f\n", t->name, t->relayed ? " (relayed)" : "", t->lat, t->lon, t->sog, t->cog, rssi);
+  if(page == PAGE_MAP || page == PAGE_NEARBY) requestRedraw();
+}
+
+void handleRadio() {
+  if(!radioOk) return;
+  static unsigned long lastPoll = 0;
+  if(millis() - lastPoll < 5) return;
+  lastPoll = millis();
+
+  uint16_t irq = radio.getIRQFlags();
+  if(radioTx) {
+    if((irq & SX127X_IRQ_TX_DONE) || millis() - radioTxStart > 3000) {
+      radio.finishTransmit();
+      radioTx = false;
+      if(irq & SX127X_IRQ_TX_DONE) { if(radioTxIsRelay) relayCount++; else txCount++; }
+      radio.startReceive();
+    }
+    return;
+  }
+  if(irq & SX127X_IRQ_RX_DONE) {
+    TrafficPacket pkt;
+    size_t len = radio.getPacketLength();
+    if(len == sizeof(pkt) && radio.readData((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) processPacket(pkt, radio.getRSSI());
+    radio.startReceive();
+  }
+
+  // Our own position goes out only if sharing is allowed; receiving and relaying do not depend on it
+  if((long)(millis() - radioNextTx) >= 0) {
+    if(sharePosition && gpsFix()) { sendPosition(); return; }
+    radioNextTx = millis() + 2000;
+  }
+  // Mesh: relay packets from other nodes that still have ttl
+  TrafficPacket relay;
+  if(meshNextRelay(relay)) {
+    if(radio.startTransmit((uint8_t*)&relay, sizeof(relay)) == RADIOLIB_ERR_NONE) {
+      radioTx = true; radioTxIsRelay = true; radioTxStart = millis();
+    } else {
+      radio.startReceive();
+    }
+  }
+}
+
+// Closest point of approach (CPA) and time to it (TCPA), on a local flat plane in metres
+void updateTarget(Target& t) {
+  t.cpaValid = false;
+  t.alarm = false;
+  if(!gpsFix() || millis() - t.lastSeen > TARGET_STALE_MS) return;
+  const double KN = 0.514444; // knots -> m/s
+  double age = (millis() - t.lastSeen) / 1000.0, lat0 = gps.location.lat() * DEG_TO_RAD;
+  double ownSog = moving() ? gps.speed.knots() * KN : 0, ownCog = heading() * DEG_TO_RAD;
+  double tgtSog = t.sog * KN, tgtCog = t.cog * DEG_TO_RAD;
+  double vx = tgtSog * sin(tgtCog) - ownSog * sin(ownCog), vy = tgtSog * cos(tgtCog) - ownSog * cos(ownCog);
+  // Relative position, moved forward by the time since the last packet
+  double rx = (t.lon - gps.location.lng()) * 111320.0 * cos(lat0) + tgtSog * sin(tgtCog) * age;
+  double ry = (t.lat - gps.location.lat()) * 110540.0 + tgtSog * cos(tgtCog) * age;
+  double v2 = vx * vx + vy * vy;
+  if(v2 < 0.06) return; // relative speed under half a knot: nothing is closing in
+  double tcpa = -(rx * vx + ry * vy) / v2;
+  if(tcpa < 0) return;  // moving apart
+  t.cpaValid = true;
+  t.tcpaS = tcpa;
+  t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
+  t.alarm = t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+}
+
+const Target* worstTarget() {
+  const Target* worst = nullptr;
+  for(const auto& t : targets) if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
+  return worst;
+}
+
+// Once a second: drop lost targets, recompute approaches, sound the alarm
+void updateTraffic() {
+  static unsigned long last = 0;
+  if(millis() - last < 1000) return;
+  last = millis();
+  for(auto it = targets.begin(); it != targets.end(); ) {
+    if(millis() - it->lastSeen > TARGET_EXPIRE_MS) { it = targets.erase(it); if(page == PAGE_MAP || page == PAGE_NEARBY) requestRedraw(); }
+    else ++it;
+  }
+  bool any = false, allMuted = true;
+  for(auto& t : targets) {
+    updateTarget(t);
+    // Silencing lasts while that node stays in alarm, and never more than a minute
+    if(!t.alarm || millis() - t.mutedAt > ALARM_MUTE_MS) t.muted = false;
+    if(t.alarm) { any = true; if(!t.muted) allMuted = false; }
+  }
+  if(any != alarmActive) { alarmNextBurst = millis(); requestRedraw(); }
+  if(any && page != PAGE_MAP && !alarmActive) showToast(String(TR("COLLISION: ", "ABBORDO: ")) + worstTarget()->name);
+  alarmActive = any;
+  alarmSilenced = any && allMuted;
+  if(alarmActive && !alarmSilenced && beepsLeft == 0 && (long)(millis() - alarmNextBurst) >= 0) {
+    beep(3);
+    alarmNextBurst = millis() + ALARM_REPEAT_MS;
+  }
+}
+
+// Silences the nodes now in alarm for a minute; a second call brings the sound back
+void silenceAlarm() {
+  bool allMuted = true;
+  for(const auto& t : targets) if(t.alarm && !t.muted) allMuted = false;
+  for(auto& t : targets) if(t.alarm) { t.muted = !allMuted; t.mutedAt = millis(); }
+  alarmSilenced = !allMuted;
+  if(alarmSilenced) beepsLeft = 0; else alarmNextBurst = millis();
+  requestRedraw();
+}
+
+// ============================================
 // Drawing helpers
 // ============================================
 void button(int x, int y, int w, int h, const String& label, bool active = false, uint8_t font = 2) {
@@ -587,10 +804,10 @@ bool inside(int x, int y, int bx, int by, int bw, int bh) { return x >= bx && x 
 
 void drawSidebar() {
   cv.fillRect(MAP_W, 0, SIDEBAR_W, SCREEN_H, C_PANEL);
-  const char* labels[SIDE_BTN_COUNT] = {TR("MAP", "MAPPA"), "WPT", TR("COMP", "BUSS"), "SET", "+", "-"};
-  int active = page == PAGE_MAP ? 0 : page == PAGE_WAYPOINTS ? 1 : page == PAGE_COMPASS ? 2 : page == PAGE_SETUP ? 3 : -1;
+  const char* labels[SIDE_BTN_COUNT] = {TR("MAP", "MAPPA"), "WPT", TR("COMP", "BUSS"), TR("NEAR", "VICINI"), "SET", "+", "-"};
+  int active = page == PAGE_MAP ? 0 : page == PAGE_WAYPOINTS ? 1 : page == PAGE_COMPASS ? 2 : page == PAGE_NEARBY ? 3 : page == PAGE_SETUP ? 4 : -1;
   for(int i = 0; i < SIDE_BTN_COUNT; i++) {
-    button(MAP_W + 3, i * SIDE_BTN_H + 3, SIDEBAR_W - 6, SIDE_BTN_H - 6, labels[i], i == active, i >= 4 ? 4 : 2);
+    button(MAP_W + 2, i * SIDE_BTN_H + 2, SIDEBAR_W - 4, SIDE_BTN_H - 4, labels[i], i == active, i >= 5 ? 4 : 2);
   }
 }
 
@@ -700,6 +917,31 @@ void drawMap() {
     cv.text(w.name, x, y - 22, 2, c, C_WHITE, TC_DATUM);
   }
 
+  // Other nodes: boat = hollow arrow with a course vector, person = ring with a dot, object = diamond
+  for(const auto& t : targets) {
+    int x = lonToPx(t.lon), y = latToPx(t.lat);
+    if(x < -20 || x > MAP_W + 20 || y < -20 || y > MAP_H + 20) continue;
+    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    uint16_t c = t.alarm ? C_RED : stale ? C_DIM : TFT_BLUE;
+    if(t.type == NODE_TYPE_PERSON) {
+      cv.fillCircle(x, y, 9, C_WHITE); cv.drawCircle(x, y, 9, c); cv.drawCircle(x, y, 8, c); cv.fillCircle(x, y, 3, c);
+    } else if(t.type == NODE_TYPE_OBJECT) {
+      cv.fillTriangle(x, y - 10, x + 10, y, x - 10, y, C_WHITE); cv.fillTriangle(x, y + 10, x + 10, y, x - 10, y, C_WHITE);
+      for(int k = 0; k < 2; k++) { cv.drawLine(x, y - 10 + k, x + 10 - k, y, c); cv.drawLine(x + 10 - k, y, x, y + 10 - k, c); cv.drawLine(x, y + 10 - k, x - 10 + k, y, c); cv.drawLine(x - 10 + k, y, x, y - 10 + k, c); }
+    } else {
+      float r = radians(t.cog);
+      if(!stale && t.sog >= 0.3) {
+        float len = min(50.0, t.sog * 0.514444 * 180.0 / metersPerPixel()); // where it will be in three minutes
+        cv.drawLine(x, y, x + len * sin(r), y - len * cos(r), c);
+      }
+      int x1 = x + 12 * sin(r), y1 = y - 12 * cos(r), x2 = x + 9 * sin(r + 2.5), y2 = y - 9 * cos(r + 2.5), x3 = x + 9 * sin(r - 2.5), y3 = y - 9 * cos(r - 2.5);
+      cv.fillTriangle(x1, y1, x2, y2, x3, y3, C_WHITE);
+      cv.drawTriangle(x1, y1, x2, y2, x3, y3, c);
+      cv.drawTriangle(x1, y1 + 1, x2, y2 + 1, x3, y3 + 1, c);
+    }
+    cv.text(t.name, x, y + 13, 2, c, C_WHITE, TC_DATUM);
+  }
+
   // The boat
   if(gpsFix()) {
     int x = lonToPx(gps.location.lng()), y = latToPx(gps.location.lat());
@@ -711,8 +953,21 @@ void drawMap() {
   }
   if(!tilesOk) cv.text(!sdOk ? TR("NO SD CARD", "SCHEDA SD ASSENTE") : TR("NO CHARTS ON THE SD CARD", "NESSUNA CARTA SULLA SD"), MAP_W / 2, 70, 2, C_RED, C_WHITE, TC_DATUM);
 
+  // Collision alarm: red band at the top; a tap on it silences the sound for a minute
+  const Target* worst = worstTarget();
+  int top = 0;
+  if(worst) {
+    char b[56];
+    snprintf(b, sizeof(b), "%s %s %sNM %d:%02d", TR("COLLISION", "ABBORDO"), worst->name, fmtNm(worst->cpaNm).c_str(), (int)worst->tcpaS / 60, (int)worst->tcpaS % 60);
+    cv.fillRect(0, 0, MAP_W, 22, C_RED);
+    cv.text(b, 4, 3, 2, C_WHITE, C_RED);
+    if(soundOn) cv.text(alarmSilenced ? TR("[muted]", "[muto]") : TR("[tap=mute]", "[tocca=muto]"), MAP_W - 4, 3, 2, C_WHITE, C_RED, TR_DATUM);
+    top = 22;
+  }
+  if(!sharePosition) cv.text(TR("HIDDEN", "NASCOSTA"), 48, top + 6, 2, C_RED, C_WHITE);
+
   // Follow button (top left) and zoom level
-  button(3, 3, 40, 36, follow ? "(o)" : " o ", follow);
+  button(3, top + 3, 40, 36, follow ? "(o)" : " o ", follow);
   char z[8];
   snprintf(z, sizeof(z), "Z%d", zoom);
   cv.text(z, 3, MAP_H - 18, 2, C_BLACK, C_WHITE);
@@ -925,12 +1180,50 @@ void drawCompassPage() {
 }
 
 // ============================================
+// Nearby page: the nodes received over LoRa
+// ============================================
+void drawNearbyPage() {
+  cv.fillRect(0, 0, MAP_W, SCREEN_H, C_WHITE);
+  cv.text(TR("NEARBY", "VICINI"), 6, 3, 2, C_ACCENT, C_WHITE);
+  char buf[64];
+  int y = 24;
+  if(!radioOk) cv.text(TR("LoRa radio not found", "Radio LoRa non trovata"), 6, y, 2, C_RED, C_WHITE);
+  else if(targets.empty()) cv.text(TR("No nodes received yet", "Nessun nodo ricevuto"), 6, y, 2, C_DIM, C_WHITE);
+  static const char* const typeEn[] = {"", " (person)", " (object)"};
+  static const char* const typeIt[] = {"", " (persona)", " (oggetto)"};
+  for(const auto& t : targets) {
+    if(y > SCREEN_H - 62) break;
+    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    uint16_t c = t.alarm ? C_RED : stale ? C_DIM : C_BLACK;
+    String line = String(t.name) + (langIt ? typeIt[t.type] : typeEn[t.type]);
+    if(gpsFix()) {
+      double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
+      double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);
+      line += "  " + fmtNm(nm) + "NM " + deg3(brg) + "^";
+    }
+    cv.text(line, 6, y, 2, c, C_WHITE);
+    if(t.cpaValid) snprintf(buf, sizeof(buf), "%.1fkn %s^  CPA %sNM %d:%02d", t.sog, deg3(t.cog).c_str(), fmtNm(t.cpaNm).c_str(), (int)t.tcpaS / 60, (int)t.tcpaS % 60);
+    else snprintf(buf, sizeof(buf), "%.1fkn %s^  %s", t.sog, deg3(t.cog).c_str(), TR("not approaching", "non in avvicinamento"));
+    cv.text(buf, 6, y + 16, 1, c, C_WHITE);
+    if(t.relayed) snprintf(buf, sizeof(buf), "%lus  %s", (millis() - t.lastSeen) / 1000, TR("relayed", "ripetuto"));
+    else snprintf(buf, sizeof(buf), "%lus  %.0fdBm", (millis() - t.lastSeen) / 1000, t.rssi);
+    cv.text(buf, MAP_W - 6, y + 16, 1, C_DIM, C_WHITE, TR_DATUM);
+    y += 30;
+  }
+  snprintf(buf, sizeof(buf), "%s: %s   LoRa %.3f MHz", TR("Me", "Io"), boatName, LORA_FREQ);
+  cv.text(buf, 6, SCREEN_H - 34, 2, C_DIM, C_WHITE);
+  if(sharePosition) snprintf(buf, sizeof(buf), "TX %lu  RX %lu  %s %lu", (unsigned long)txCount, (unsigned long)rxCount, TR("relayed", "ripetuti"), (unsigned long)relayCount);
+  else snprintf(buf, sizeof(buf), "%s  RX %lu  %s %lu", TR("HIDDEN", "NASCOSTA"), (unsigned long)rxCount, TR("relayed", "ripetuti"), (unsigned long)relayCount);
+  cv.text(buf, 6, SCREEN_H - 18, 2, C_DIM, C_WHITE);
+}
+
+// ============================================
 // Setup page
 // ============================================
 #define SETUP_COLS 2
-#define SETUP_ITEMS 6
+#define SETUP_ITEMS 8
 #define SETUP_BTN_W 132
-#define SETUP_BTN_H 34
+#define SETUP_BTN_H 32
 #define SETUP_Y0 24
 
 void setupButtonRect(int i, int& x, int& y) {
@@ -947,13 +1240,15 @@ void drawSetupPage() {
     soundOn ? TR("[X] Sound", "[X] Suono") : TR("[ ] Sound", "[ ] Suono"),
     TR("Test sound", "Prova suono"),
     follow ? TR("[X] Follow boat", "[X] Segui barca") : TR("[ ] Follow boat", "[ ] Segui barca"),
-    TR("Calibrate touch", "Calibra il touch")};
+    TR("Calibrate touch", "Calibra il touch"),
+    sharePosition ? TR("[X] Share position", "[X] Trasmetti pos.") : TR("[ ] Share position", "[ ] Trasmetti pos."),
+    String("v") + FW_VERSION + "  " + String(batteryVolts(), 2) + " V"};
   for(int i = 0; i < SETUP_ITEMS; i++) {
     int x, y;
     setupButtonRect(i, x, y);
     button(x, y, SETUP_BTN_W, SETUP_BTN_H, labels[i]);
   }
-  int y = SETUP_Y0 + 3 * (SETUP_BTN_H + 4) + 6;
+  int y = SETUP_Y0 + 4 * (SETUP_BTN_H + 4) + 2;
   char buf[64];
   if(!gpsBaud) snprintf(buf, sizeof(buf), "GPS: %s, %lu byte", TR("not found on IO35", "non trovato su IO35"), (unsigned long)gpsBytes);
   else snprintf(buf, sizeof(buf), "GPS: %lu baud, %s, %d sat", (unsigned long)gpsBaud, gpsFix() ? "fix" : TR("no fix", "no fix"), gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
@@ -961,11 +1256,10 @@ void drawSetupPage() {
   if(!sdOk) snprintf(buf, sizeof(buf), "SD: %s", TR("not found", "non trovata"));
   else if(!tilesOk) snprintf(buf, sizeof(buf), "SD: ok, %s", TR("no charts", "nessuna carta"));
   else snprintf(buf, sizeof(buf), "SD: ok, %s %d-%d, %d WP", TR("charts zoom", "carte zoom"), zoomMin, zoomMax, (int)waypoints.size());
-  cv.text(buf, 6, y + 18, 2, C_BLACK, C_WHITE);
-  snprintf(buf, sizeof(buf), "%s %.2f V   v%s", TR("Battery", "Batteria"), batteryVolts(), FW_VERSION);
-  cv.text(buf, 6, y + 36, 2, C_BLACK, C_WHITE);
-  snprintf(buf, sizeof(buf), "%s: %u KB", TR("Free memory", "Memoria libera"), (unsigned)(ESP.getFreeHeap() / 1024));
-  cv.text(buf, 6, y + 54, 2, C_DIM, C_WHITE);
+  cv.text(buf, 6, y + 16, 2, C_BLACK, C_WHITE);
+  if(!radioOk) snprintf(buf, sizeof(buf), "LoRa: %s", TR("radio not found", "radio non trovata"));
+  else snprintf(buf, sizeof(buf), "LoRa: ok  TX %lu  RX %lu", (unsigned long)txCount, (unsigned long)rxCount);
+  cv.text(buf, 6, y + 32, 2, C_BLACK, C_WHITE);
 }
 
 void nameEntered(const String& s) {
@@ -987,6 +1281,11 @@ void tapSetupPage(int x, int y) {
       case 3: { bool was = soundOn; soundOn = true; beep(3); soundOn = was; } break;
       case 4: setFollow(!follow); break;
       case 5: calibrateTouch(); break;
+      case 6:
+        sharePosition = !sharePosition;
+        saveSettings();
+        showToast(sharePosition ? TR("Position shared with the others", "Posizione trasmessa agli altri") : TR("Hidden: not transmitting", "Nascosta: non trasmetto"));
+        break;
     }
     return;
   }
@@ -1051,15 +1350,17 @@ void onTap(int x, int y) {
       case 0: goTo(PAGE_MAP); break;
       case 1: goTo(PAGE_WAYPOINTS); break;
       case 2: goTo(PAGE_COMPASS); break;
-      case 3: goTo(PAGE_SETUP); break;
-      case 4: setZoom(zoom + 1); break;
-      case 5: setZoom(zoom - 1); break;
+      case 3: goTo(PAGE_NEARBY); break;
+      case 4: goTo(PAGE_SETUP); break;
+      case 5: setZoom(zoom + 1); break;
+      case 6: setZoom(zoom - 1); break;
     }
     return;
   }
   switch(page) {
     case PAGE_MAP:
-      if(inside(x, y, 0, 0, 48, 44)) setFollow(!follow);
+      if(alarmActive && y < 22) silenceAlarm();
+      else if(inside(x, y, 0, alarmActive ? 22 : 0, 48, 44)) setFollow(!follow);
       break;
     case PAGE_WAYPOINTS: tapWaypointsPage(x, y); break;
     case PAGE_SETUP: tapSetupPage(x, y); break;
@@ -1088,6 +1389,7 @@ void render() {
     case PAGE_MAP: drawMap(); drawStatusBar(); break;
     case PAGE_WAYPOINTS: drawWaypointsPage(); break;
     case PAGE_COMPASS: drawCompassPage(); break;
+    case PAGE_NEARBY: drawNearbyPage(); break;
     case PAGE_SETUP: drawSetupPage(); break;
     case PAGE_KEYBOARD: drawKeyboardPage(); break;
   }
@@ -1113,7 +1415,7 @@ void updateDisplay() {
         drawStatusBar();
         cv.pushRows(MAP_H, STATUS_H);
       }
-    } else if((page == PAGE_COMPASS || page == PAGE_SETUP || page == PAGE_WAYPOINTS) && now - lastFullDraw > 1000) {
+    } else if((page == PAGE_COMPASS || page == PAGE_SETUP || page == PAGE_WAYPOINTS || page == PAGE_NEARBY) && now - lastFullDraw > 1000) {
       needsRedraw = true;
     }
   }
@@ -1171,6 +1473,7 @@ void setup() {
   bool held = true;
   for(int i = 0; i < 20 && held; i++) { held = touchPressed(); delay(40); }
   if(!calOk || held) calibrateTouch();
+  initRadio();
   detectGpsBaud();
   beep(1);
   requestRedraw();
@@ -1179,6 +1482,8 @@ void setup() {
 void loop() {
   readGps();
   handleTouch();
+  handleRadio();
+  updateTraffic();
   handleSound();
   updateDisplay();
 }
