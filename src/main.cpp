@@ -228,7 +228,7 @@ void goTo(Page p) { page = p; requestRedraw(); }
 // ============================================
 // Helpers
 // ============================================
-bool gpsFix() { return gps.location.isValid() && gps.location.age() < 5000; }
+bool gpsFix() { return gps.location.isValid() && gps.location.age() < 8000; }
 bool moving() { return gps.speed.isValid() && gps.speed.knots() >= MOVING_MIN_KNOTS; }
 
 // Heading = GPS course; when stopped the GPS course is noise, so the last good one is kept
@@ -374,6 +374,9 @@ void detectGpsBaud() {
   const uint32_t bauds[] = {9600, 38400, 115200, 4800, 57600};
   for(uint32_t baud : bauds) {
     Serial2.end();
+    // Drawing the map can take a third of a second: without a larger buffer the GPS sentences that
+    // arrive meanwhile are lost, and the fix seems to come and go
+    Serial2.setRxBufferSize(2048);
     Serial2.begin(baud, SERIAL_8N1, PIN_GPS_RX, -1);
     unsigned long start = millis();
     int dollars = 0, printable = 0, total = 0;
@@ -804,10 +807,18 @@ bool inside(int x, int y, int bx, int by, int bw, int bh) { return x >= bx && x 
 
 void drawSidebar() {
   cv.fillRect(MAP_W, 0, SIDEBAR_W, SCREEN_H, C_PANEL);
-  const char* labels[SIDE_BTN_COUNT] = {TR("MAP", "MAPPA"), "WPT", TR("COMP", "BUSS"), TR("NEAR", "VICINI"), "SET", "+", "-"};
+  const char* labels[SIDE_BTN_COUNT] = {"MAP", "WPT", TR("CMP", "BUS"), TR("NEAR", "VIC"), "SET", "", ""};
   int active = page == PAGE_MAP ? 0 : page == PAGE_WAYPOINTS ? 1 : page == PAGE_COMPASS ? 2 : page == PAGE_NEARBY ? 3 : page == PAGE_SETUP ? 4 : -1;
   for(int i = 0; i < SIDE_BTN_COUNT; i++) {
-    button(MAP_W + 2, i * SIDE_BTN_H + 2, SIDEBAR_W - 4, SIDE_BTN_H - 4, labels[i], i == active, i >= 5 ? 4 : 2);
+    int x = MAP_W + 2, y = i * SIDE_BTN_H + 2, w = SIDEBAR_W - 4, h = SIDE_BTN_H - 4;
+    // The small font keeps the labels well inside the buttons
+    button(x, y, w, h, labels[i], i == active, 1);
+    if(i >= 5) {
+      // Zoom in and zoom out: a plus and a minus drawn as bars
+      int cx = x + w / 2, cy = y + h / 2;
+      cv.fillRect(cx - 7, cy - 1, 15, 3, C_BLACK);
+      if(i == 5) cv.fillRect(cx - 1, cy - 7, 3, 15, C_BLACK);
+    }
   }
 }
 
