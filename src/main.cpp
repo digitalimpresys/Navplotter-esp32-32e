@@ -1768,10 +1768,4 @@ void loop() {
   handleSound();
   if(wifiRunning) server.handleClient();
   updateDisplay();
-  // TEMPORARY DIAGNOSTICS: memory and WiFi clients
-  static unsigned long lastDiag = 0;
-  if(millis() - lastDiag > 4000) {
-    lastDiag = millis();
-    Serial.printf("DIAG heap %u, min %u, largest %u, stations %d\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), wifiRunning ? WiFi.softAPgetStationNum() : -1);
-  }
 }

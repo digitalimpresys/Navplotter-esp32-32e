@@ -39,7 +39,7 @@ Waypoints are stored on the SD card in the same file as the T-Deck plotter (`way
 
 ## How the screen is drawn
 
-A full-screen 16-bit buffer does not fit in memory on this board, and drawing straight to the display flickers. The screen is therefore drawn off-screen in three 320x80 strips, which do fit, and then pushed to the display.
+A full-screen 16-bit buffer does not fit in memory on this board, and drawing straight to the display flickers. The page area (the map, or the page that replaces it) is therefore drawn off-screen in three 272x74 strips, which do fit, and then pushed to the display. Sidebar, status bar and the on-screen keyboard are simple enough to be drawn directly. Keeping the buffer to the page area is what leaves enough memory for WiFi: with a full-screen buffer the web app could not be served.
 
 ## Building
 
