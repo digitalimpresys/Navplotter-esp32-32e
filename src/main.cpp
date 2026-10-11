@@ -28,7 +28,7 @@
 #define SCREEN_W 320
 #define SCREEN_H 240
 #define SIDEBAR_W 48
-#define STATUS_H 20
+#define STATUS_H 18
 #define MAP_W (SCREEN_W - SIDEBAR_W)
 #define MAP_H (SCREEN_H - STATUS_H)
 #define SIDE_BTN_COUNT 7
@@ -79,14 +79,36 @@ bool langIt = false;
 #define TR(en, it) (langIt ? (it) : (en))
 
 // ============================================
-// Canvas: the whole screen drawn off-screen in three strips
+// Canvas: the page area drawn off-screen in three strips
 // ============================================
-// A full 320x240 16-bit buffer is 150 KB in one piece, more than this board can allocate.
-// Three 320x80 strips fit, and each drawing call is simply sent to all of them.
+// Drawing straight to the display flickers, and a full-screen 16-bit buffer (150 KB in one piece) does not
+// fit in memory. The page area (everything but the sidebar and the status bar) is therefore drawn in three
+// strips, which do fit, and each drawing call is simply sent to all of them. Sidebar, status bar and the
+// on-screen keyboard are simple enough to be drawn straight to the display: that leaves memory for WiFi.
 #define STRIPS 3
-#define STRIP_H (SCREEN_H / STRIPS)
+#define STRIP_H (MAP_H / STRIPS)
 
 TFT_eSPI tft;
+
+// Text on the display or on a strip. datum: TL_DATUM, TC_DATUM, TR_DATUM or MC_DATUM; bg == fg means
+// "no background". The built-in fonts have no degree sign: a '^' in the text is drawn as one (a small ring).
+void drawText(TFT_eSPI& t, const String& text, int x, int y, uint8_t font, uint16_t fg, uint16_t bg, uint8_t datum) {
+  int mark = text.indexOf('^');
+  String shown = text;
+  if(mark >= 0) shown.setCharAt(mark, ' ');
+  t.setTextDatum(datum);
+  if(fg == bg) t.setTextColor(fg); else t.setTextColor(fg, bg);
+  t.drawString(shown, x, y, font);
+  if(mark >= 0) {
+    int w = t.textWidth(shown, font), h = t.fontHeight(font);
+    int left = datum == TL_DATUM ? x : datum == TR_DATUM ? x - w : x - w / 2;
+    int top = datum == MC_DATUM ? y - h / 2 : y;
+    int r = font >= 4 ? 3 : 2;
+    int cx = left + t.textWidth(shown.substring(0, mark), font) + t.textWidth(" ", font) / 2, cy = top + r + 2;
+    t.drawCircle(cx, cy, r, fg);
+    if(font >= 4) t.drawCircle(cx, cy, r - 1, fg);
+  }
+}
 
 class Canvas {
 public:
@@ -96,20 +118,13 @@ public:
     for(int i = 0; i < STRIPS; i++) {
       s[i] = new TFT_eSprite(&tft);
       s[i]->setColorDepth(16);
-      if(s[i]->createSprite(SCREEN_W, STRIP_H) == nullptr) return false;
+      if(s[i]->createSprite(MAP_W, STRIP_H) == nullptr) return false;
       s[i]->setTextWrap(false);
     }
     return true;
   }
   void push() { for(int i = 0; i < STRIPS; i++) s[i]->pushSprite(0, i * STRIP_H); }
-  // Sends only the strips that hold rows y..y+h-1 (used for the status bar, redrawn every second)
-  void pushRows(int y, int h) {
-    for(int i = 0; i < STRIPS; i++) {
-      if(y < (i + 1) * STRIP_H && y + h > i * STRIP_H) s[i]->pushSprite(0, i * STRIP_H);
-    }
-  }
 #define EACH for(int i = 0, o = 0; i < STRIPS; i++, o += STRIP_H)
-  void fill(uint16_t c) { EACH s[i]->fillSprite(c); }
   void fillRect(int x, int y, int w, int h, uint16_t c) { EACH s[i]->fillRect(x, y - o, w, h, c); }
   void drawRect(int x, int y, int w, int h, uint16_t c) { EACH s[i]->drawRect(x, y - o, w, h, c); }
   void fillRoundRect(int x, int y, int w, int h, int r, uint16_t c) { EACH s[i]->fillRoundRect(x, y - o, w, h, r, c); }
@@ -120,25 +135,8 @@ public:
   void fillCircle(int x, int y, int r, uint16_t c) { EACH s[i]->fillCircle(x, y - o, r, c); }
   void drawCircle(int x, int y, int r, uint16_t c) { EACH s[i]->drawCircle(x, y - o, r, c); }
   void pushImage(int x, int y, int w, int h, uint16_t* data) { EACH s[i]->pushImage(x, y - o, w, h, data); }
-  // Text. datum: TL_DATUM, TC_DATUM, TR_DATUM or MC_DATUM; bg == fg means "no background".
-  // The built-in fonts have no degree sign: a '^' in the text is drawn as one (a small ring).
   void text(const String& t, int x, int y, uint8_t font, uint16_t fg, uint16_t bg, uint8_t datum = TL_DATUM) {
-    int mark = t.indexOf('^');
-    String shown = t;
-    if(mark >= 0) shown.setCharAt(mark, ' ');
-    EACH {
-      s[i]->setTextDatum(datum);
-      if(fg == bg) s[i]->setTextColor(fg); else s[i]->setTextColor(fg, bg);
-      s[i]->drawString(shown, x, y - o, font);
-    }
-    if(mark >= 0) {
-      int w = s[0]->textWidth(shown, font), h = s[0]->fontHeight(font);
-      int left = datum == TL_DATUM ? x : datum == TR_DATUM ? x - w : x - w / 2;
-      int top = datum == MC_DATUM ? y - h / 2 : y;
-      int r = font >= 4 ? 3 : 2;
-      int cx = left + s[0]->textWidth(shown.substring(0, mark), font) + s[0]->textWidth(" ", font) / 2, cy = top + r + 2;
-      EACH { s[i]->drawCircle(cx, cy - o, r, fg); if(font >= 4) s[i]->drawCircle(cx, cy - o, r - 1, fg); }
-    }
+    EACH drawText(*s[i], t, x, y - o, font, fg, bg, datum);
   }
   int textWidth(const String& t, uint8_t font) { return s[0]->textWidth(t, font); }
 #undef EACH
@@ -217,6 +215,7 @@ uint8_t txSeq = 0;
 bool alarmActive = false, alarmSilenced = false;
 
 bool needsRedraw = true;
+bool sidebarDirty = true;      // the sidebar is drawn straight to the display, only when it changes
 unsigned long lastFullDraw = 0, lastStatusDraw = 0;
 int lastBoatX = -1000, lastBoatY = -1000;
 String toast;
@@ -609,6 +608,7 @@ void calibrateTouch() {
     Serial.println("Calibration rejected, repeating");
     retry = true;
   }
+  sidebarDirty = true; // the calibration screen covered everything
   requestRedraw();
 }
 
@@ -1031,47 +1031,56 @@ void button(int x, int y, int w, int h, const String& label, bool active = false
   cv.text(label, x + w / 2, y + h / 2, font, textc, textc, MC_DATUM);
 }
 
+// The same button, drawn straight to the display
+void tftButton(int x, int y, int w, int h, const String& label, bool active = false, uint8_t font = 2) {
+  uint16_t fillc = active ? C_ACCENT : C_BTN, textc = active ? C_WHITE : C_BLACK;
+  tft.fillRoundRect(x, y, w, h, 5, fillc);
+  tft.drawRoundRect(x, y, w, h, 5, active ? TFT_CYAN : C_BLACK);
+  drawText(tft, label, x + w / 2, y + h / 2, font, textc, textc, MC_DATUM);
+}
+
 bool inside(int x, int y, int bx, int by, int bw, int bh) { return x >= bx && x < bx + bw && y >= by && y < by + bh; }
 
 void drawSidebar() {
-  cv.fillRect(MAP_W, 0, SIDEBAR_W, SCREEN_H, C_PANEL);
+  tft.fillRect(MAP_W, 0, SIDEBAR_W, SCREEN_H, C_PANEL);
   const char* labels[SIDE_BTN_COUNT] = {"MAP", "WPT", TR("CMP", "BUS"), TR("NEAR", "VIC"), "SET", "", ""};
   int active = page == PAGE_MAP ? 0 : page == PAGE_WAYPOINTS ? 1 : page == PAGE_COMPASS ? 2 : page == PAGE_NEARBY ? 3 : page == PAGE_SETUP ? 4 : -1;
   for(int i = 0; i < SIDE_BTN_COUNT; i++) {
     int x = MAP_W + 2, y = i * SIDE_BTN_H + 2, w = SIDEBAR_W - 4, h = SIDE_BTN_H - 4;
     // The small font keeps the labels well inside the buttons
-    button(x, y, w, h, labels[i], i == active, 1);
+    tftButton(x, y, w, h, labels[i], i == active, 1);
     if(i >= 5) {
       // Zoom in and zoom out: a plus and a minus drawn as bars
       int cx = x + w / 2, cy = y + h / 2;
-      cv.fillRect(cx - 7, cy - 1, 15, 3, C_BLACK);
-      if(i == 5) cv.fillRect(cx - 1, cy - 7, 3, 15, C_BLACK);
+      tft.fillRect(cx - 7, cy - 1, 15, 3, C_BLACK);
+      if(i == 5) tft.fillRect(cx - 1, cy - 7, 3, 15, C_BLACK);
     }
   }
 }
 
+// Bottom line, on every page: time, speed and course, destination (or satellites)
 void drawStatusBar() {
   int y = MAP_H;
-  cv.fillRect(0, y, MAP_W, STATUS_H, C_BLACK);
+  tft.fillRect(0, y, MAP_W, STATUS_H, C_BLACK);
   char buf[32];
   if(gps.time.isValid()) snprintf(buf, sizeof(buf), "%02d:%02d:%02d", gps.time.hour(), gps.time.minute(), gps.time.second());
   else strcpy(buf, "--:--:--");
-  cv.text(buf, 3, y + 2, 2, C_WHITE, C_BLACK);
+  drawText(tft, buf, 3, y + 1, 2, C_WHITE, C_BLACK, TL_DATUM);
   float hdg = heading();
   if(!gpsBaud) snprintf(buf, sizeof(buf), "%s", TR("no GPS", "no GPS"));
   else if(!gpsFix()) snprintf(buf, sizeof(buf), "%s", TR("no fix", "no fix"));
   else if(courseKnown) snprintf(buf, sizeof(buf), "%.1fkn %03d^", gps.speed.knots(), ((int)lround(hdg)) % 360);
   else snprintf(buf, sizeof(buf), "%.1fkn ---^", gps.speed.knots());
-  cv.text(buf, 70, y + 2, 2, gpsFix() ? C_WHITE : C_RED, C_BLACK);
+  drawText(tft, buf, 70, y + 1, 2, gpsFix() ? C_WHITE : C_RED, C_BLACK, TL_DATUM);
   Waypoint* d = findWp(destId);
   if(d && gpsFix()) {
     double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), d->lat, d->lon);
     double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), d->lat, d->lon) / 1852.0;
     snprintf(buf, sizeof(buf), ">%s^ %sNM", deg3(brg).c_str(), fmtNm(nm).c_str());
-    cv.text(buf, MAP_W - 3, y + 2, 2, TFT_YELLOW, C_BLACK, TR_DATUM);
+    drawText(tft, buf, MAP_W - 3, y + 1, 2, TFT_YELLOW, C_BLACK, TR_DATUM);
   } else {
     snprintf(buf, sizeof(buf), "SAT %d", gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
-    cv.text(buf, MAP_W - 3, y + 2, 2, C_DIM, C_BLACK, TR_DATUM);
+    drawText(tft, buf, MAP_W - 3, y + 1, 2, C_DIM, C_BLACK, TR_DATUM);
   }
 }
 
@@ -1255,7 +1264,7 @@ void addWaypoint(double lat, double lon) {
 #define LIST_ROWS 5
 #define LIST_ROW_H 30
 #define LIST_Y0 26
-#define ACTION_Y (SCREEN_H - 34)
+#define ACTION_Y (MAP_H - 34)
 #define ACTION_COUNT 4
 
 void actionBar(const char* const labels[ACTION_COUNT]) {
@@ -1271,7 +1280,7 @@ int actionAt(int x, int y) {
 }
 
 void drawWaypointsPage() {
-  cv.fillRect(0, 0, MAP_W, SCREEN_H, C_WHITE);
+  cv.fillRect(0, 0, MAP_W, MAP_H, C_WHITE);
   cv.text("WAYPOINT", 6, 3, 2, C_ACCENT, C_WHITE);
   if(waypoints.empty()) cv.text(TR("None yet: long press on the map", "Nessuno: tocco lungo sulla mappa"), 6, LIST_Y0 + 8, 2, C_DIM, C_WHITE);
 
@@ -1361,8 +1370,8 @@ void tapWaypointsPage(int x, int y) {
 // ============================================
 void drawCompassPage() {
   const uint16_t BG = C_BLACK, RING = TFT_LIGHTGREY;
-  const int cx = 104, cy = 122, R = 98;
-  cv.fillRect(0, 0, MAP_W, SCREEN_H, BG);
+  const int cx = 104, cy = 114, R = 96;
+  cv.fillRect(0, 0, MAP_W, MAP_H, BG);
   float hdg = heading();
   cv.drawCircle(cx, cy, R, RING);
   cv.drawCircle(cx, cy, R - 1, RING);
@@ -1422,7 +1431,7 @@ void drawCompassPage() {
 // Nearby page: the nodes received over LoRa
 // ============================================
 void drawNearbyPage() {
-  cv.fillRect(0, 0, MAP_W, SCREEN_H, C_WHITE);
+  cv.fillRect(0, 0, MAP_W, MAP_H, C_WHITE);
   cv.text(TR("NEARBY", "VICINI"), 6, 3, 2, C_ACCENT, C_WHITE);
   char buf[64];
   int y = 24;
@@ -1431,7 +1440,7 @@ void drawNearbyPage() {
   static const char* const typeEn[] = {"", " (person)", " (object)"};
   static const char* const typeIt[] = {"", " (persona)", " (oggetto)"};
   for(const auto& t : targets) {
-    if(y > SCREEN_H - 62) break;
+    if(y > MAP_H - 62) break;
     bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
     uint16_t c = t.alarm ? C_RED : stale ? C_DIM : C_BLACK;
     String line = String(t.name) + (langIt ? typeIt[t.type] : typeEn[t.type]);
@@ -1450,10 +1459,10 @@ void drawNearbyPage() {
     y += 30;
   }
   snprintf(buf, sizeof(buf), "%s: %s   LoRa %.3f MHz", TR("Me", "Io"), boatName, LORA_FREQ);
-  cv.text(buf, 6, SCREEN_H - 34, 2, C_DIM, C_WHITE);
+  cv.text(buf, 6, MAP_H - 34, 2, C_DIM, C_WHITE);
   if(sharePosition) snprintf(buf, sizeof(buf), "TX %lu  RX %lu  %s %lu", (unsigned long)txCount, (unsigned long)rxCount, TR("relayed", "ripetuti"), (unsigned long)relayCount);
   else snprintf(buf, sizeof(buf), "%s  RX %lu  %s %lu", TR("HIDDEN", "NASCOSTA"), (unsigned long)rxCount, TR("relayed", "ripetuti"), (unsigned long)relayCount);
-  cv.text(buf, 6, SCREEN_H - 18, 2, C_DIM, C_WHITE);
+  cv.text(buf, 6, MAP_H - 18, 2, C_DIM, C_WHITE);
 }
 
 // ============================================
@@ -1463,7 +1472,7 @@ void drawNearbyPage() {
 #define SETUP_ITEMS 8
 #define SETUP_BTN_W 132
 #define SETUP_BTN_H 32
-#define SETUP_Y0 24
+#define SETUP_Y0 22
 
 void setupButtonRect(int i, int& x, int& y) {
   x = 3 + (i % SETUP_COLS) * (SETUP_BTN_W + 4);
@@ -1471,7 +1480,7 @@ void setupButtonRect(int i, int& x, int& y) {
 }
 
 void drawSetupPage() {
-  cv.fillRect(0, 0, MAP_W, SCREEN_H, C_WHITE);
+  cv.fillRect(0, 0, MAP_W, MAP_H, C_WHITE);
   cv.text(TR("SETUP", "IMPOSTAZIONI"), 6, 3, 2, C_ACCENT, C_WHITE);
   String labels[SETUP_ITEMS] = {
     String(TR("Name: ", "Nome: ")) + boatName,
@@ -1487,7 +1496,7 @@ void drawSetupPage() {
     setupButtonRect(i, x, y);
     button(x, y, SETUP_BTN_W, SETUP_BTN_H, labels[i]);
   }
-  int y = SETUP_Y0 + 4 * (SETUP_BTN_H + 4) + 2;
+  int y = SETUP_Y0 + 4 * (SETUP_BTN_H + 4);
   char buf[64];
   if(!gpsBaud) snprintf(buf, sizeof(buf), "GPS: %s, %lu byte", TR("not found on IO35", "non trovato su IO35"), (unsigned long)gpsBytes);
   else snprintf(buf, sizeof(buf), "GPS: %lu baud, %s, %d sat", (unsigned long)gpsBaud, gpsFix() ? "fix" : TR("no fix", "no fix"), gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
@@ -1495,14 +1504,14 @@ void drawSetupPage() {
   if(!sdOk) snprintf(buf, sizeof(buf), "SD: %s", TR("not found", "non trovata"));
   else if(!tilesOk) snprintf(buf, sizeof(buf), "SD: ok, %s", TR("no charts", "nessuna carta"));
   else snprintf(buf, sizeof(buf), "SD: ok, %s %d-%d, %d WP", TR("charts zoom", "carte zoom"), zoomMin, zoomMax, (int)waypoints.size());
-  cv.text(buf, 6, y + 16, 2, C_BLACK, C_WHITE);
+  cv.text(buf, 6, y + 15, 2, C_BLACK, C_WHITE);
   if(!radioOk) snprintf(buf, sizeof(buf), "LoRa: %s", TR("radio not found", "radio non trovata"));
   else snprintf(buf, sizeof(buf), "LoRa: ok  TX %lu  RX %lu", (unsigned long)txCount, (unsigned long)rxCount);
-  cv.text(buf, 6, y + 32, 2, C_BLACK, C_WHITE);
+  cv.text(buf, 6, y + 30, 2, C_BLACK, C_WHITE);
   // How to reach the web app from a phone, or version and battery when the WiFi is off
   if(wifiRunning) snprintf(buf, sizeof(buf), "WiFi %s  pw %s  192.168.4.1", apSsid.c_str(), wifiPass);
   else snprintf(buf, sizeof(buf), "v%s  %s %.2f V", FW_VERSION, TR("battery", "batteria"), batteryVolts());
-  cv.text(buf, 6, y + 50, 1, C_DIM, C_WHITE);
+  cv.text(buf, 6, y + 46, 1, C_DIM, C_WHITE);
 }
 
 void nameEntered(const String& s) {
@@ -1551,24 +1560,32 @@ void tapSetupPage(int x, int y) {
 #define KB_BOTTOM_Y (KB_Y0 + KB_ROWS * KB_KEY_H)
 const char* const kbRows[KB_ROWS] = {"1234567890", "qwertyuiop", "asdfghjkl-", "zxcvbnm.+'"};
 
-void drawKeyboardPage() {
-  cv.fill(C_WHITE);
-  cv.text(kbTitle, 6, 2, 2, C_ACCENT, C_WHITE);
-  cv.drawRect(4, 20, SCREEN_W - 8, 26, C_BLACK);
-  cv.text(kbText + "_", 8, 22, 4, C_BLACK, C_WHITE);
-  for(int r = 0; r < KB_ROWS; r++) {
-    for(int c = 0; c < KB_COLS; c++) {
-      char ch = kbRows[r][c];
-      if(kbShift && ch >= 'a' && ch <= 'z') ch -= 32;
-      button(c * KB_KEY_W + 1, KB_Y0 + r * KB_KEY_H + 1, KB_KEY_W - 2, KB_KEY_H - 2, String(ch), false, 4);
-    }
+// Drawn straight to the display. full = the whole page; otherwise only what a key press changes.
+void drawKeyboardPage(bool full) {
+  if(full) {
+    tft.fillScreen(C_WHITE);
+    drawText(tft, kbTitle, 6, 2, 2, C_ACCENT, C_WHITE, TL_DATUM);
+    tft.drawRect(4, 20, SCREEN_W - 8, 26, C_BLACK);
+    int h = SCREEN_H - KB_BOTTOM_Y - 1;
+    tftButton(65, KB_BOTTOM_Y + 1, 94, h, TR("space", "spazio"));
+    tftButton(161, KB_BOTTOM_Y + 1, 54, h, "<-");
+    tftButton(217, KB_BOTTOM_Y + 1, 50, h, "X");
+    tftButton(269, KB_BOTTOM_Y + 1, 50, h, "OK", true);
   }
-  int h = SCREEN_H - KB_BOTTOM_Y - 1;
-  button(1, KB_BOTTOM_Y + 1, 62, h, kbShift ? "abc" : "ABC", kbShift);
-  button(65, KB_BOTTOM_Y + 1, 94, h, TR("space", "spazio"));
-  button(161, KB_BOTTOM_Y + 1, 54, h, "<-");
-  button(217, KB_BOTTOM_Y + 1, 50, h, "X");
-  button(269, KB_BOTTOM_Y + 1, 50, h, "OK", true);
+  static bool shownShift = false;
+  if(full || shownShift != kbShift) {
+    shownShift = kbShift;
+    for(int r = 0; r < KB_ROWS; r++) {
+      for(int c = 0; c < KB_COLS; c++) {
+        char ch = kbRows[r][c];
+        if(kbShift && ch >= 'a' && ch <= 'z') ch -= 32;
+        tftButton(c * KB_KEY_W + 1, KB_Y0 + r * KB_KEY_H + 1, KB_KEY_W - 2, KB_KEY_H - 2, String(ch), false, 4);
+      }
+    }
+    tftButton(1, KB_BOTTOM_Y + 1, 62, SCREEN_H - KB_BOTTOM_Y - 1, kbShift ? "abc" : "ABC", kbShift);
+  }
+  tft.fillRect(5, 21, SCREEN_W - 10, 24, C_WHITE);
+  drawText(tft, kbText + "_", 8, 22, 4, C_BLACK, C_WHITE, TL_DATUM);
 }
 
 void tapKeyboardPage(int x, int y) {
@@ -1634,17 +1651,28 @@ void onDrag(int dx, int dy) {
 // Rendering
 // ============================================
 void render() {
+  static Page shownPage = PAGE_KEYBOARD;
+  static bool shownIt = false;
+  bool pageChanged = page != shownPage || langIt != shownIt;
+  shownPage = page;
+  shownIt = langIt;
+
+  if(page == PAGE_KEYBOARD) {
+    drawKeyboardPage(pageChanged);
+    return;
+  }
   switch(page) {
-    case PAGE_MAP: drawMap(); drawStatusBar(); break;
+    case PAGE_MAP: drawMap(); break;
     case PAGE_WAYPOINTS: drawWaypointsPage(); break;
     case PAGE_COMPASS: drawCompassPage(); break;
     case PAGE_NEARBY: drawNearbyPage(); break;
     case PAGE_SETUP: drawSetupPage(); break;
-    case PAGE_KEYBOARD: drawKeyboardPage(); break;
+    default: break;
   }
-  if(page != PAGE_KEYBOARD) drawSidebar();
   drawToast();
   cv.push();
+  if(pageChanged || sidebarDirty) { drawSidebar(); sidebarDirty = false; }
+  drawStatusBar();
 }
 
 void updateDisplay() {
@@ -1662,9 +1690,8 @@ void updateDisplay() {
       if(!needsRedraw && now - lastStatusDraw > 1000) {
         lastStatusDraw = now;
         drawStatusBar();
-        cv.pushRows(MAP_H, STATUS_H);
       }
-    } else if((page == PAGE_COMPASS || page == PAGE_SETUP || page == PAGE_WAYPOINTS || page == PAGE_NEARBY) && now - lastFullDraw > 1000) {
+    } else if(page != PAGE_KEYBOARD && now - lastFullDraw > 1000) {
       needsRedraw = true;
     }
   }
@@ -1741,4 +1768,10 @@ void loop() {
   handleSound();
   if(wifiRunning) server.handleClient();
   updateDisplay();
+  // TEMPORARY DIAGNOSTICS: memory and WiFi clients
+  static unsigned long lastDiag = 0;
+  if(millis() - lastDiag > 4000) {
+    lastDiag = millis();
+    Serial.printf("DIAG heap %u, min %u, largest %u, stations %d\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), wifiRunning ? WiFi.softAPgetStationNum() : -1);
+  }
 }
