@@ -21,7 +21,7 @@ The board was identified with the small firmware in `probe/`: ESP32-D0WD-V3 with
 
 - **First start:** touch calibration, four crosses to press. It can be repeated from Setup.
 - **Map:** drag to move, `+` and `-` to zoom, long press to add a waypoint. The button in the top left corner keeps the boat in the middle of the map (follow mode); dragging the map turns it off.
-- **WPT:** waypoint list. Go to (sets the destination: a red line on the map, bearing and distance in the status bar), Show, Name, Delete.
+- **WPT:** two tabs. *Waypoint*: the list, with Go to (sets the destination: a red line on the map, bearing and distance in the status bar), Show, Name, Delete. *Routes*: ordered lists of waypoints, with Follow, New, Edit and Delete; editing a route adds waypoints from the list, moves them up, removes them, and a tap on the route name renames it. Following a route draws it in magenta, sets the destination to its first waypoint and moves it to the next one on arrival (within 0.05 NM).
 - **NEAR:** the other NavPlotter nodes received over LoRa (T-Deck plotter, Heltec node), with distance, bearing and closest approach. They are drawn on the map with a symbol for their type (boat, person, object). When one is predicted to pass closer than 0.1 NM within 5 minutes a red band appears on the map and the speaker beeps; a tap on the band silences it for a minute.
 - **COMP:** heading-up compass with the bearing of the destination. Heading is the GPS course.
 - **SET:** boat name, language, sound, follow mode, touch calibration, position sharing (off = the boat is hidden from the others but still receives and relays them), status.
@@ -33,9 +33,9 @@ The board also creates its own WiFi network and serves a web app, the same one a
 1. Join the WiFi network `NavPlotter-<boat name>` (default password `navplotter`; the SET page on the board shows both).
 2. Open `http://192.168.4.1`.
 
-The phone gets its charts from the board's SD card, so nothing needs internet. Waypoints and destination are shared: what is added on the touch screen shows up on the phone and the other way round. Routes exist only in the web app for now. The WiFi can be switched off in SET.
+The phone gets its charts from the board's SD card, so nothing needs internet. Waypoints, routes and destination are the same on the touch screen and in the web app. The WiFi can be switched off in SET.
 
-Waypoints are stored on the SD card in the same file as the T-Deck plotter (`waypoints.txt`); settings are kept in the board's own memory.
+Waypoints and routes are stored on the SD card in the same files as the T-Deck plotter (`waypoints.txt`, `routes.txt`); settings are kept in the board's own memory.
 
 ## How the screen is drawn
 
@@ -52,6 +52,6 @@ The web app is `web/index.html`; `tools/embed_web.py` compresses it into `src/we
 
 ## Still to do
 
-Routes. Radio interoperability between this SX1276 and the SX1262 of the T-Deck and Heltec nodes still has to be confirmed on the air.
+Nothing planned at the moment. Radio interoperability between this SX1276 and the SX1262 of the T-Deck and Heltec nodes has been confirmed on the air.
 
 `include/traffic_packet.h` (packet, radio settings, mesh) is shared with the other NavPlotter firmwares and must stay identical to theirs; its comments are in Italian because it was first written there.

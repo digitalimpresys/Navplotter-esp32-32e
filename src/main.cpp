@@ -17,12 +17,13 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <vector>
+#include <algorithm>
 #include <math.h>
 #include "board.h"
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FW_VERSION "0.3.0"
+#define FW_VERSION "0.4.0"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -161,6 +162,15 @@ Preferences prefs;
 TinyGPSPlus gps;
 SPIClass sdSpi(VSPI);
 
+// A route is an ordered list of waypoints. Following one moves the destination from waypoint to waypoint.
+struct Route {
+  int id = 0;
+  char name[NAME_LEN] = "";
+  std::vector<int> wps;
+};
+std::vector<Route> routes;
+int activeRouteId = -1;       // the route being followed, -1 = none
+
 std::vector<Waypoint> waypoints;
 int selectedWp = -1;
 int destId = -1;              // "go to" destination, -1 = none
@@ -200,14 +210,13 @@ uint8_t nodeType = NODE_TYPE_BOAT;
 uint8_t alarmRangeNm = 3;       // only nodes inside this distance can raise the collision alarm (3, 6 or 12)
 
 // Web app for a phone, served over the board's own WiFi network (same app as the Heltec node)
-#define WEB_ROUTES_FILE "/webroutes.json"
+#define WEB_ROUTES_FILE "/webroutes.json"  // where the first WiFi version kept the routes: read once, then removed
 WebServer server(80);
 bool wifiOn = true, wifiRunning = false;
 char wifiPass[33] = "navplotter";
 uint8_t webTiles = 1;           // chart source of the web app: 0 online, 1 this board's SD card, 2 none
 bool webSound = true;
 String apSsid;
-String webRoutes = "\"routes\":[],\"route\":null,\"nextRouteId\":1"; // routes exist only in the web app for now
 uint32_t udVersion = 1;         // goes up whenever waypoints or destination change, so the phone reloads them
 unsigned long radioTxStart = 0, radioNextTx = 0, alarmNextBurst = 0;
 uint32_t txCount = 0, rxCount = 0, relayCount = 0, myId = 0;
@@ -304,6 +313,7 @@ void saveSettings() {
   prefs.putBool("wsound", webSound);
   prefs.putInt("zoom", zoom);
   prefs.putInt("dest", destId);
+  prefs.putInt("route", activeRouteId);
   prefs.putBool("calok2", calOk);
   prefs.putBytes("cal2", cal, sizeof(cal));
   prefs.end();
@@ -317,6 +327,7 @@ void loadSettings() {
   sharePosition = prefs.getBool("share", true);
   zoom = prefs.getInt("zoom", ZOOM_DEFAULT);
   destId = prefs.getInt("dest", -1);
+  activeRouteId = prefs.getInt("route", -1);
   calOk = prefs.getBool("calok2", false);
   if(calOk) prefs.getBytes("cal2", cal, sizeof(cal));
   nodeType = prefs.getUChar("type", NODE_TYPE_BOAT);
@@ -363,6 +374,89 @@ void loadWaypoints() {
   }
   f.close();
   Serial.printf("%d waypoints loaded\n", (int)waypoints.size());
+}
+
+// Routes: same file format as the T-Deck plotter
+void saveRoutes() {
+  udVersion++;
+  if(!sdOk) return;
+  File f = SD.open("/routes.txt", FILE_WRITE);
+  if(!f) return;
+  for(const auto& r : routes) {
+    f.printf("[ROUTE]\nID=%d\nNAME=%s\nWAYPOINTS=", r.id, r.name);
+    for(size_t i = 0; i < r.wps.size(); i++) f.printf("%s%d", i ? "," : "", r.wps[i]);
+    f.print("\n\n");
+  }
+  f.close();
+}
+
+void loadRoutes() {
+  if(!sdOk || !SD.exists("/routes.txt")) return;
+  File f = SD.open("/routes.txt");
+  if(!f) return;
+  routes.clear();
+  Route r;
+  bool open = false;
+  while(f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if(line.startsWith("[ROUTE]")) {
+      if(open) routes.push_back(r);
+      r = Route();
+      open = true;
+    } else if(line.startsWith("ID=")) {
+      r.id = line.substring(3).toInt();
+    } else if(line.startsWith("NAME=")) {
+      line.substring(5).toCharArray(r.name, NAME_LEN);
+    } else if(line.startsWith("WAYPOINTS=")) {
+      String list = line.substring(10);
+      int start = 0;
+      while(start < (int)list.length()) {
+        int comma = list.indexOf(',', start);
+        if(comma < 0) comma = list.length();
+        if(comma > start) r.wps.push_back(list.substring(start, comma).toInt());
+        start = comma + 1;
+      }
+    }
+  }
+  if(open) routes.push_back(r);
+  f.close();
+  Serial.printf("%d routes loaded\n", (int)routes.size());
+}
+
+Route* findRoute(int id) {
+  for(auto& r : routes) if(r.id == id) return &r;
+  return nullptr;
+}
+
+int nextRouteId() {
+  int m = 0;
+  for(const auto& r : routes) if(r.id > m) m = r.id;
+  return m + 1;
+}
+
+// Length of a route from its waypoint number "from" to the end, in nautical miles
+double routeNm(const Route& r, size_t from = 0) {
+  double total = 0;
+  Waypoint* prev = nullptr;
+  for(size_t i = from; i < r.wps.size(); i++) {
+    Waypoint* w = findWp(r.wps[i]);
+    if(!w) continue;
+    if(prev) total += TinyGPSPlus::distanceBetween(prev->lat, prev->lon, w->lat, w->lon) / 1852.0;
+    prev = w;
+  }
+  return total;
+}
+
+// Distance still to go on the followed route: to the current destination, then the legs after it. -1 = none
+double routeRemaining() {
+  Route* r = findRoute(activeRouteId);
+  Waypoint* d = findWp(destId);
+  if(!r || !d || !gpsFix()) return -1;
+  for(size_t i = 0; i < r->wps.size(); i++) {
+    if(r->wps[i] == destId) return TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), d->lat, d->lon) / 1852.0 + routeNm(*r, i);
+  }
+  return -1;
 }
 
 // ============================================
@@ -924,11 +1018,10 @@ void webState() {
   sendJson(json);
 }
 
-// Waypoints and destination are the board's own, shared with its touch screen. Routes exist only in the
-// web app for now and are kept as a piece of JSON.
+// Waypoints, routes and destination are the board's own, shared with its touch screen
 void webGetUserdata() {
   String json = "{\"wps\":[";
-  json.reserve(200 + waypoints.size() * 90 + webRoutes.length());
+  json.reserve(300 + waypoints.size() * 90 + routes.size() * 80);
   char buf[120];
   bool first = true;
   for(const auto& w : waypoints) {
@@ -936,7 +1029,16 @@ void webGetUserdata() {
     json += buf;
     first = false;
   }
-  json += "],\"dest\":" + (destId >= 0 ? String(destId) : String("null")) + ",\"nextId\":" + String(nextWpId()) + "," + webRoutes + ",\"version\":" + String(udVersion) + "}";
+  json += "],\"dest\":" + (destId >= 0 ? String(destId) : String("null")) + ",\"nextId\":" + String(nextWpId()) + ",\"routes\":[";
+  first = true;
+  for(const auto& r : routes) {
+    json += String(first ? "" : ",") + "{\"id\":" + r.id + ",\"name\":\"" + jsonText(r.name) + "\",\"wps\":[";
+    for(size_t i = 0; i < r.wps.size(); i++) json += String(i ? "," : "") + r.wps[i];
+    json += "]}";
+    first = false;
+  }
+  json += "],\"route\":" + (findRoute(activeRouteId) ? String(activeRouteId) : String("null")) + ",\"nextRouteId\":" + String(nextRouteId()) +
+    ",\"version\":" + String(udVersion) + "}";
   sendJson(json);
 }
 
@@ -954,21 +1056,24 @@ void webPostUserdata() {
     w.lon = o["lon"] | 0.0;
     if(w.id > 0) waypoints.push_back(w);
   }
+  if(doc["routes"].is<JsonArray>()) {
+    routes.clear();
+    for(JsonObject o : doc["routes"].as<JsonArray>()) {
+      Route r;
+      r.id = o["id"] | 0;
+      String n = o["name"] | "Route";
+      strncpy(r.name, n.c_str(), NAME_LEN - 1);
+      for(JsonVariant v : o["wps"].as<JsonArray>()) r.wps.push_back(v.as<int>());
+      if(r.id > 0) routes.push_back(r);
+    }
+  }
   destId = doc["dest"].is<int>() ? doc["dest"].as<int>() : -1;
   if(destId >= 0 && !findWp(destId)) destId = -1;
-  // The routes part, kept as text
-  JsonDocument r;
-  r["routes"] = doc["routes"];
-  r["route"] = doc["route"];
-  r["nextRouteId"] = doc["nextRouteId"] | 1;
-  String rs;
-  serializeJson(r, rs);
-  if(rs.length() > 2 && rs.length() < 12000) {
-    webRoutes = rs.substring(1, rs.length() - 1);
-    if(sdOk) { File f = SD.open(WEB_ROUTES_FILE, FILE_WRITE); if(f) { f.print(webRoutes); f.close(); } }
-  }
+  activeRouteId = doc["route"].is<int>() ? doc["route"].as<int>() : -1;
+  if(!findRoute(activeRouteId)) activeRouteId = -1;
   selectedWp = min(selectedWp, (int)waypoints.size() - 1);
   saveWaypoints();
+  saveRoutes();
   saveSettings();
   requestRedraw();
   sendJson(String("{\"ok\":true,\"version\":") + udVersion + "}");
@@ -1147,6 +1252,25 @@ void drawMap() {
     }
   }
 
+  // The followed route: magenta legs with an arrow showing the way
+  if(Route* r = findRoute(activeRouteId)) {
+    Waypoint* prev = nullptr;
+    for(int id : r->wps) {
+      Waypoint* w = findWp(id);
+      if(!w) continue;
+      if(prev) {
+        int x1 = lonToPx(prev->lon), y1 = latToPx(prev->lat), x2 = lonToPx(w->lon), y2 = latToPx(w->lat);
+        for(int k = 0; k <= 1; k++) { cv.drawLine(x1 + k, y1, x2 + k, y2, TFT_MAGENTA); cv.drawLine(x1, y1 + k, x2, y2 + k, TFT_MAGENTA); }
+        if(hypot(x2 - x1, y2 - y1) > 40) {
+          float a = atan2(y2 - y1, x2 - x1);
+          int mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          cv.fillTriangle(mx + 9 * cos(a), my + 9 * sin(a), mx + 7 * cos(a + 2.5), my + 7 * sin(a + 2.5), mx + 7 * cos(a - 2.5), my + 7 * sin(a - 2.5), TFT_MAGENTA);
+        }
+      }
+      prev = w;
+    }
+  }
+
   // Line to the destination, then the waypoints
   Waypoint* d = findWp(destId);
   if(d && gpsFix()) {
@@ -1279,40 +1403,111 @@ int actionAt(int x, int y) {
   return (i >= 0 && i < ACTION_COUNT) ? i : -1;
 }
 
+// The page has four views: waypoint list, route list, one route being edited, picking a waypoint to add
+enum WpView {VIEW_WAYPOINTS, VIEW_ROUTES, VIEW_ROUTE_EDIT, VIEW_ROUTE_ADD};
+WpView wpView = VIEW_WAYPOINTS;
+int selectedRoute = -1, routeTop = 0, editRouteId = -1, selectedLeg = -1, legTop = 0, pickTop = 0;
+
+// Keeps a list's selection and first shown row inside the list
+void fitList(int count, int& sel, int& top) {
+  if(sel >= count) sel = count - 1;
+  if(sel >= 0 && sel < top) top = sel;
+  if(sel >= top + LIST_ROWS) top = sel - LIST_ROWS + 1;
+  top = constrain(top, 0, max(0, count - LIST_ROWS));
+}
+
+void listRow(int r, bool sel, const String& line1, const String& line2) {
+  int y = LIST_Y0 + r * LIST_ROW_H;
+  uint16_t bg = sel ? C_ACCENT : C_WHITE, fg = sel ? C_WHITE : C_BLACK;
+  cv.fillRect(0, y, MAP_W - 36, LIST_ROW_H - 2, bg);
+  cv.text(line1, 6, y + 1, 2, fg, bg);
+  cv.text(line2, 6, y + 16, 1, sel ? C_WHITE : C_DIM, bg);
+}
+
+void scrollButtons(int count) {
+  if(count <= LIST_ROWS) return;
+  button(MAP_W - 34, LIST_Y0, 32, 60, "^");
+  button(MAP_W - 34, LIST_Y0 + 90, 32, 60, "v");
+}
+
+// -1 = up, 1 = down, 0 = not on a scroll button
+int scrollAt(int x, int y, int count) {
+  if(count <= LIST_ROWS || x < MAP_W - 36) return 0;
+  if(inside(x, y, MAP_W - 36, LIST_Y0, 36, 60)) return -1;
+  if(inside(x, y, MAP_W - 36, LIST_Y0 + 90, 36, 60)) return 1;
+  return 0;
+}
+
+String wpLine2(const Waypoint& w) {
+  if(!gpsFix()) return String(w.lat, 5) + ", " + String(w.lon, 5);
+  double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), w.lat, w.lon) / 1852.0;
+  double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), w.lat, w.lon);
+  return fmtNm(nm) + " NM  " + deg3(brg) + "^";
+}
+
 void drawWaypointsPage() {
   cv.fillRect(0, 0, MAP_W, MAP_H, C_WHITE);
-  cv.text("WAYPOINT", 6, 3, 2, C_ACCENT, C_WHITE);
-  if(waypoints.empty()) cv.text(TR("None yet: long press on the map", "Nessuno: tocco lungo sulla mappa"), 6, LIST_Y0 + 8, 2, C_DIM, C_WHITE);
+  Route* er = findRoute(editRouteId);
+  if((wpView == VIEW_ROUTE_EDIT || wpView == VIEW_ROUTE_ADD) && !er) wpView = VIEW_ROUTES;
 
-  if(selectedWp >= (int)waypoints.size()) selectedWp = waypoints.size() - 1;
-  if(selectedWp >= 0 && selectedWp < listTop) listTop = selectedWp;
-  if(selectedWp >= listTop + LIST_ROWS) listTop = selectedWp - LIST_ROWS + 1;
-  listTop = constrain(listTop, 0, max(0, (int)waypoints.size() - LIST_ROWS));
+  if(wpView == VIEW_WAYPOINTS || wpView == VIEW_ROUTES) {
+    // Two tabs at the top
+    button(2, 1, 112, 22, "Waypoint", wpView == VIEW_WAYPOINTS);
+    button(118, 1, 112, 22, TR("Routes", "Rotte"), wpView == VIEW_ROUTES);
+  }
 
-  for(int r = 0; r < LIST_ROWS && listTop + r < (int)waypoints.size(); r++) {
-    const Waypoint& w = waypoints[listTop + r];
-    int y = LIST_Y0 + r * LIST_ROW_H;
-    bool sel = listTop + r == selectedWp;
-    uint16_t bg = sel ? C_ACCENT : C_WHITE, fg = sel ? C_WHITE : C_BLACK;
-    cv.fillRect(0, y, MAP_W - 36, LIST_ROW_H - 2, bg);
-    String label = String(w.name) + (w.id == destId ? TR("  <- DEST", "  <- DEST") : "");
-    cv.text(label, 6, y + 1, 2, fg, bg);
-    if(gpsFix()) {
-      double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), w.lat, w.lon) / 1852.0;
-      double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), w.lat, w.lon);
-      cv.text(fmtNm(nm) + " NM  " + deg3(brg) + "^", 6, y + 16, 1, sel ? C_WHITE : C_DIM, bg);
-    } else {
-      cv.text(String(w.lat, 5) + ", " + String(w.lon, 5), 6, y + 16, 1, sel ? C_WHITE : C_DIM, bg);
+  if(wpView == VIEW_WAYPOINTS) {
+    if(waypoints.empty()) cv.text(TR("None yet: long press on the map", "Nessuno: tocco lungo sulla mappa"), 6, LIST_Y0 + 8, 2, C_DIM, C_WHITE);
+    fitList(waypoints.size(), selectedWp, listTop);
+    for(int r = 0; r < LIST_ROWS && listTop + r < (int)waypoints.size(); r++) {
+      const Waypoint& w = waypoints[listTop + r];
+      listRow(r, listTop + r == selectedWp, String(w.name) + (w.id == destId ? "  <- DEST" : ""), wpLine2(w));
     }
+    scrollButtons(waypoints.size());
+    static const char* const en[ACTION_COUNT] = {"Go to", "Show", "Name", "Delete"};
+    static const char* const it[ACTION_COUNT] = {"Vai", "Mostra", "Nome", "Elimina"};
+    actionBar(langIt ? it : en);
+
+  } else if(wpView == VIEW_ROUTES) {
+    if(routes.empty()) cv.text(TR("No routes yet: press New", "Nessuna rotta: premi Nuova"), 6, LIST_Y0 + 8, 2, C_DIM, C_WHITE);
+    fitList(routes.size(), selectedRoute, routeTop);
+    for(int r = 0; r < LIST_ROWS && routeTop + r < (int)routes.size(); r++) {
+      const Route& rt = routes[routeTop + r];
+      String l2 = String(rt.wps.size()) + " WP  " + fmtNm(routeNm(rt)) + " NM";
+      if(rt.id == activeRouteId) { double rem = routeRemaining(); if(rem >= 0) l2 += String(TR("  left ", "  mancano ")) + fmtNm(rem) + " NM"; }
+      listRow(r, routeTop + r == selectedRoute, String(rt.name) + (rt.id == activeRouteId ? TR("  <- FOLLOWED", "  <- SEGUITA") : ""), l2);
+    }
+    scrollButtons(routes.size());
+    bool on = selectedRoute >= 0 && selectedRoute < (int)routes.size() && routes[selectedRoute].id == activeRouteId;
+    const char* labels[ACTION_COUNT] = {on ? TR("Stop", "Ferma") : TR("Follow", "Segui"), TR("New", "Nuova"), TR("Edit", "Modifica"), TR("Delete", "Elimina")};
+    actionBar(labels);
+
+  } else if(wpView == VIEW_ROUTE_EDIT) {
+    // The name is a button: a tap renames the route
+    button(2, 1, MAP_W - 4, 22, String(TR("Route: ", "Rotta: ")) + er->name + "  (" + fmtNm(routeNm(*er)) + " NM)");
+    if(er->wps.empty()) cv.text(TR("Empty: press Add", "Vuota: premi Aggiungi"), 6, LIST_Y0 + 8, 2, C_DIM, C_WHITE);
+    fitList(er->wps.size(), selectedLeg, legTop);
+    for(int r = 0; r < LIST_ROWS && legTop + r < (int)er->wps.size(); r++) {
+      Waypoint* w = findWp(er->wps[legTop + r]);
+      listRow(r, legTop + r == selectedLeg, String(legTop + r + 1) + ". " + (w ? w->name : "?"), w ? wpLine2(*w) : String());
+    }
+    scrollButtons(er->wps.size());
+    static const char* const en[ACTION_COUNT] = {"Add", "Move up", "Remove", "Done"};
+    static const char* const it[ACTION_COUNT] = {"Aggiungi", "Su", "Togli", "Fine"};
+    actionBar(langIt ? it : en);
+
+  } else {
+    cv.text(String(TR("Tap to add to ", "Tocca per aggiungere a ")) + er->name, 6, 3, 2, C_ACCENT, C_WHITE);
+    if(waypoints.empty()) cv.text(TR("No waypoints: long press on the map", "Nessun waypoint: tocco lungo sulla mappa"), 6, LIST_Y0 + 8, 2, C_DIM, C_WHITE);
+    pickTop = constrain(pickTop, 0, max(0, (int)waypoints.size() - LIST_ROWS));
+    for(int r = 0; r < LIST_ROWS && pickTop + r < (int)waypoints.size(); r++) {
+      const Waypoint& w = waypoints[pickTop + r];
+      int n = std::count(er->wps.begin(), er->wps.end(), w.id);
+      listRow(r, false, String(w.name) + (n ? TR("  (in the route)", "  (nella rotta)") : ""), wpLine2(w));
+    }
+    scrollButtons(waypoints.size());
+    button(2, ACTION_Y, MAP_W - 4, 32, TR("Done", "Fine"), true);
   }
-  // Scroll buttons, when the list is longer than the screen
-  if((int)waypoints.size() > LIST_ROWS) {
-    button(MAP_W - 34, LIST_Y0, 32, 60, "^");
-    button(MAP_W - 34, LIST_Y0 + 90, 32, 60, "v");
-  }
-  static const char* const en[ACTION_COUNT] = {"Go to", "Show", "Name", "Delete"};
-  static const char* const it[ACTION_COUNT] = {"Vai", "Mostra", "Nome", "Elimina"};
-  actionBar(langIt ? it : en);
 }
 
 void wpRenamed(const String& s) {
@@ -1327,41 +1522,155 @@ void openKeyboard(const String& title, const String& text, int maxLen, void (*do
   goTo(PAGE_KEYBOARD);
 }
 
+void routeRenamed(const String& s) {
+  Route* r = findRoute(editRouteId);
+  if(!r || s.length() == 0) return;
+  strncpy(r->name, s.c_str(), NAME_LEN - 1);
+  r->name[NAME_LEN - 1] = '\0';
+  saveRoutes();
+}
+
+// Starts or stops following a route: the destination becomes its first waypoint
+void followRoute(Route& r) {
+  if(activeRouteId == r.id) {
+    activeRouteId = -1;
+    destId = -1;
+    showToast(TR("Route stopped", "Rotta fermata"));
+  } else {
+    Waypoint* first = nullptr;
+    for(int id : r.wps) if((first = findWp(id))) break;
+    if(!first) { showToast(TR("The route has no waypoints", "La rotta non ha waypoint")); return; }
+    activeRouteId = r.id;
+    destId = first->id;
+    showToast(String(TR("Following ", "Seguo ")) + r.name);
+  }
+  saveSettings();
+}
+
+// Following a route: on arrival at a waypoint the destination moves to the next one
+void advanceRoute() {
+  static unsigned long last = 0;
+  if(millis() - last < 1000) return;
+  last = millis();
+  Route* r = findRoute(activeRouteId);
+  Waypoint* d = findWp(destId);
+  if(!r || !d || !gpsFix()) return;
+  if(TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), d->lat, d->lon) / 1852.0 > ARRIVAL_NM) return;
+  for(size_t i = 0; i + 1 < r->wps.size(); i++) {
+    if(r->wps[i] != destId) continue;
+    Waypoint* next = findWp(r->wps[i + 1]);
+    if(!next) return;
+    destId = next->id;
+    saveSettings();
+    beep(2);
+    showToast(String(TR("Next waypoint: ", "Prossimo waypoint: ")) + next->name);
+    return;
+  }
+}
+
 void tapWaypointsPage(int x, int y) {
-  if((int)waypoints.size() > LIST_ROWS && x >= MAP_W - 36) {
-    if(inside(x, y, MAP_W - 36, LIST_Y0, 36, 60)) { selectedWp = max(0, selectedWp - 1); requestRedraw(); }
-    else if(inside(x, y, MAP_W - 36, LIST_Y0 + 90, 36, 60)) { selectedWp = min((int)waypoints.size() - 1, selectedWp + 1); requestRedraw(); }
+  // Tabs
+  if((wpView == VIEW_WAYPOINTS || wpView == VIEW_ROUTES) && y < 24) {
+    if(x < 116) wpView = VIEW_WAYPOINTS; else if(x < 232) wpView = VIEW_ROUTES;
+    requestRedraw();
     return;
   }
-  if(y >= LIST_Y0 && y < LIST_Y0 + LIST_ROWS * LIST_ROW_H) {
-    int idx = listTop + (y - LIST_Y0) / LIST_ROW_H;
-    if(idx < (int)waypoints.size()) { selectedWp = idx; requestRedraw(); }
-    return;
-  }
+  int row = (y >= LIST_Y0 && y < LIST_Y0 + LIST_ROWS * LIST_ROW_H && x < MAP_W - 36) ? (y - LIST_Y0) / LIST_ROW_H : -1;
   int a = actionAt(x, y);
-  if(a < 0) return;
-  if(selectedWp < 0 || selectedWp >= (int)waypoints.size()) { showToast(TR("Select a waypoint first", "Prima scegli un waypoint")); return; }
-  Waypoint& w = waypoints[selectedWp];
-  switch(a) {
-    case 0: // go to / stop
-      destId = destId == w.id ? -1 : w.id;
-      saveSettings();
-      showToast(destId < 0 ? TR("Destination cleared", "Destinazione annullata") : String(TR("Destination: ", "Destinazione: ")) + w.name);
-      break;
-    case 1: // show on the map
-      mapLat = w.lat; mapLon = w.lon; follow = false; mapPlaced = true;
-      goTo(PAGE_MAP);
-      break;
-    case 2:
-      openKeyboard(TR("Waypoint name", "Nome del waypoint"), w.name, NAME_LEN - 1, wpRenamed);
-      break;
-    case 3:
-      if(destId == w.id) { destId = -1; saveSettings(); }
-      waypoints.erase(waypoints.begin() + selectedWp);
-      selectedWp = min(selectedWp, (int)waypoints.size() - 1);
-      saveWaypoints();
-      showToast(TR("Waypoint deleted", "Waypoint eliminato"));
-      break;
+  requestRedraw();
+
+  if(wpView == VIEW_WAYPOINTS) {
+    if(int d = scrollAt(x, y, waypoints.size())) { selectedWp = constrain(selectedWp + d, 0, (int)waypoints.size() - 1); return; }
+    if(row >= 0) { if(listTop + row < (int)waypoints.size()) selectedWp = listTop + row; return; }
+    if(a < 0) return;
+    if(selectedWp < 0 || selectedWp >= (int)waypoints.size()) { showToast(TR("Select a waypoint first", "Prima scegli un waypoint")); return; }
+    Waypoint& w = waypoints[selectedWp];
+    switch(a) {
+      case 0: { // go to / stop; a destination outside the followed route ends the route
+        destId = destId == w.id ? -1 : w.id;
+        Route* r = findRoute(activeRouteId);
+        if(r && (destId < 0 || std::find(r->wps.begin(), r->wps.end(), destId) == r->wps.end())) activeRouteId = -1;
+        saveSettings();
+        showToast(destId < 0 ? TR("Destination cleared", "Destinazione annullata") : String(TR("Destination: ", "Destinazione: ")) + w.name);
+        break;
+      }
+      case 1: // show on the map
+        mapLat = w.lat; mapLon = w.lon; follow = false; mapPlaced = true;
+        goTo(PAGE_MAP);
+        break;
+      case 2:
+        openKeyboard(TR("Waypoint name", "Nome del waypoint"), w.name, NAME_LEN - 1, wpRenamed);
+        break;
+      case 3: {
+        int id = w.id;
+        if(destId == id) { destId = -1; saveSettings(); }
+        waypoints.erase(waypoints.begin() + selectedWp);
+        selectedWp = min(selectedWp, (int)waypoints.size() - 1);
+        for(auto& r : routes) r.wps.erase(std::remove(r.wps.begin(), r.wps.end(), id), r.wps.end());
+        saveWaypoints();
+        saveRoutes();
+        showToast(TR("Waypoint deleted", "Waypoint eliminato"));
+        break;
+      }
+    }
+
+  } else if(wpView == VIEW_ROUTES) {
+    if(int d = scrollAt(x, y, routes.size())) { selectedRoute = constrain(selectedRoute + d, 0, (int)routes.size() - 1); return; }
+    if(row >= 0) { if(routeTop + row < (int)routes.size()) selectedRoute = routeTop + row; return; }
+    if(a < 0) return;
+    if(a == 1) { // new route, opened for editing straight away
+      Route r;
+      r.id = nextRouteId();
+      snprintf(r.name, sizeof(r.name), "%s %d", TR("Route", "Rotta"), r.id);
+      routes.push_back(r);
+      saveRoutes();
+      selectedRoute = routes.size() - 1;
+      editRouteId = r.id;
+      selectedLeg = -1;
+      wpView = VIEW_ROUTE_EDIT;
+      return;
+    }
+    if(selectedRoute < 0 || selectedRoute >= (int)routes.size()) { showToast(TR("Select a route first", "Prima scegli una rotta")); return; }
+    Route& r = routes[selectedRoute];
+    if(a == 0) followRoute(r);
+    else if(a == 2) { editRouteId = r.id; selectedLeg = -1; legTop = 0; wpView = VIEW_ROUTE_EDIT; }
+    else if(a == 3) {
+      if(activeRouteId == r.id) { activeRouteId = -1; destId = -1; saveSettings(); }
+      routes.erase(routes.begin() + selectedRoute);
+      selectedRoute = min(selectedRoute, (int)routes.size() - 1);
+      saveRoutes();
+      showToast(TR("Route deleted", "Rotta eliminata"));
+    }
+
+  } else if(wpView == VIEW_ROUTE_EDIT) {
+    Route* r = findRoute(editRouteId);
+    if(!r) { wpView = VIEW_ROUTES; return; }
+    if(y < 24) { openKeyboard(TR("Route name", "Nome della rotta"), r->name, NAME_LEN - 1, routeRenamed); return; }
+    if(int d = scrollAt(x, y, r->wps.size())) { selectedLeg = constrain(selectedLeg + d, 0, (int)r->wps.size() - 1); return; }
+    if(row >= 0) { if(legTop + row < (int)r->wps.size()) selectedLeg = legTop + row; return; }
+    bool has = selectedLeg >= 0 && selectedLeg < (int)r->wps.size();
+    switch(a) {
+      case 0: pickTop = 0; wpView = VIEW_ROUTE_ADD; break;
+      case 1:
+        if(has && selectedLeg > 0) { std::swap(r->wps[selectedLeg], r->wps[selectedLeg - 1]); selectedLeg--; saveRoutes(); }
+        break;
+      case 2:
+        if(has) { r->wps.erase(r->wps.begin() + selectedLeg); selectedLeg = min(selectedLeg, (int)r->wps.size() - 1); saveRoutes(); }
+        else showToast(TR("Select a waypoint of the route", "Scegli un waypoint della rotta"));
+        break;
+      case 3: wpView = VIEW_ROUTES; break;
+    }
+
+  } else {
+    Route* r = findRoute(editRouteId);
+    if(!r || y >= ACTION_Y) { wpView = r ? VIEW_ROUTE_EDIT : VIEW_ROUTES; return; }
+    if(int d = scrollAt(x, y, waypoints.size())) { pickTop = constrain(pickTop + d * LIST_ROWS, 0, max(0, (int)waypoints.size() - LIST_ROWS)); return; }
+    if(row >= 0 && pickTop + row < (int)waypoints.size()) {
+      r->wps.push_back(waypoints[pickTop + row].id);
+      selectedLeg = r->wps.size() - 1;
+      saveRoutes();
+      showToast(String(waypoints[pickTop + row].name) + TR(" added", " aggiunto"));
+    }
   }
 }
 
@@ -1416,6 +1725,8 @@ void drawCompassPage() {
   if(have) {
     row(TR("BEARING", "RILEV."), deg3(brg) + "^", TFT_GREEN);
     row(TR("DISTANCE", "DISTANZA"), fmtNm(nm) + " NM", TFT_GREEN);
+    double rem = routeRemaining();
+    if(rem >= 0) row(TR("ROUTE LEFT", "ROTTA: MANCANO"), fmtNm(rem) + " NM", TFT_MAGENTA);
     if(courseKnown) {
       int turn = (int)lround(brg - hdg);
       while(turn > 180) turn -= 360;
@@ -1750,10 +2061,27 @@ void setup() {
   for(int i = 0; i < 20 && held; i++) { held = touchPressed(); delay(40); }
   if(!calOk || held) calibrateTouch();
   initRadio();
-  if(sdOk && SD.exists(WEB_ROUTES_FILE)) {
+  loadRoutes();
+  if(routes.empty() && sdOk && SD.exists(WEB_ROUTES_FILE)) {
+    // Routes made with the first WiFi version, which kept them as a piece of JSON
     File f = SD.open(WEB_ROUTES_FILE);
-    if(f) { String r = f.readString(); f.close(); if(r.startsWith("\"routes\"") && r.length() < 12000) webRoutes = r; }
+    String old = f ? f.readString() : String();
+    if(f) f.close();
+    JsonDocument doc;
+    if(!deserializeJson(doc, "{" + old + "}") && doc["routes"].is<JsonArray>()) {
+      for(JsonObject o : doc["routes"].as<JsonArray>()) {
+        Route r;
+        r.id = o["id"] | 0;
+        String n = o["name"] | "Route";
+        strncpy(r.name, n.c_str(), NAME_LEN - 1);
+        for(JsonVariant v : o["wps"].as<JsonArray>()) r.wps.push_back(v.as<int>());
+        if(r.id > 0) routes.push_back(r);
+      }
+      saveRoutes();
+    }
+    SD.remove(WEB_ROUTES_FILE);
   }
+  if(!findRoute(activeRouteId)) activeRouteId = -1;
   if(wifiOn) startWifi();
   detectGpsBaud();
   beep(1);
@@ -1765,6 +2093,7 @@ void loop() {
   handleTouch();
   handleRadio();
   updateTraffic();
+  advanceRoute();
   handleSound();
   if(wifiRunning) server.handleClient();
   updateDisplay();
