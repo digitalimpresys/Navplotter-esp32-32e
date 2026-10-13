@@ -1422,8 +1422,8 @@ void drawMap() {
     cv.text(b, 4, 3, 2, C_WHITE, C_RED);
     if(soundOn) cv.text(alarmSilenced ? TR("[muted]", "[muto]") : TR("[tap=mute]", "[tocca=muto]"), MAP_W - 4, 3, 2, C_WHITE, C_RED, TR_DATUM);
     top = 22;
-    // Under the band, on the right: sends a warning message to the node in alarm
-    button(WARN_BTN_X, WARN_BTN_Y, WARN_BTN_W, WARN_BTN_H, TR("WARN", "AVVISA"), true);
+    // Under the band, on the right: write a message to the node in alarm
+    button(WARN_BTN_X, WARN_BTN_Y, WARN_BTN_W, WARN_BTN_H, TR("WRITE", "SCRIVI"), true);
   }
   if(!sharePosition) cv.text(TR("HIDDEN", "NASCOSTA"), 48, top + 6, 2, C_RED, C_WHITE);
 
@@ -1908,18 +1908,16 @@ void chatCompose() {
   openKeyboard(String(TR("Message to ", "Messaggio a ")) + (chatToId ? chatToName : allName()), "", MSG_TEXT_LEN - 1, messageEntered);
 }
 
-// Collision alarm: sends the node closest in time a warning message with distance and time. It is a
-// message like the others: there it comes up over the page with the sound, here its status can be followed.
+// Collision alarm: opens the writing of a message already addressed to the node closest in time. The
+// text is written by the navigator.
 void warnCollision() {
   const Target* worst = worstTarget();
   if(!worst) { showToast(TR("No node on a collision course", "Nessun nodo in rotta di abbordo")); return; }
-  for(const auto& m : chatMessages) {
-    if(m.mine && m.peer == worst->id && m.status == MSG_PENDING) { showToast(String(TR("Warning being sent to ", "Avviso in corso a ")) + worst->name); return; }
-  }
-  char text[MSG_TEXT_LEN];
-  snprintf(text, sizeof(text), "%s, %s NM %s %d:%02d", TR("WARNING: collision course", "ATTENZIONE: rotta di collisione"), fmtNm(worst->cpaNm).c_str(), TR("in", "tra"), (int)worst->tcpaS / 60, (int)worst->tcpaS % 60);
-  msgSend(worst->id, worst->name, text);
-  showToast(String(TR("Warning sent to ", "Avviso inviato a ")) + worst->name);
+  chatToId = worst->id;
+  strncpy(chatToName, worst->name, BOAT_NAME_LEN - 1);
+  chatToName[BOAT_NAME_LEN - 1] = '\0';
+  nearbyMessages = true;
+  chatCompose();
 }
 
 void tapNearbyPage(int x, int y) {
