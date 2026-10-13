@@ -125,6 +125,15 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
         <label data-i18n="nodeType"></label>
         <div class="types" id="fTypes"></div>
         <div class="hint" data-i18n="typeHint"></div>
+        <label data-i18n="alarmProfile"></label>
+        <select id="fProfile"><option value="0" data-i18n="profHarbour"></option><option value="1" data-i18n="profCoastal"></option><option value="2" data-i18n="profOpen"></option><option value="3" data-i18n="profNight"></option><option value="4" data-i18n="profCustom"></option></select>
+        <div id="customBox" style="display:none">
+          <label data-i18n="customCpa"></label>
+          <input type="text" inputmode="decimal" id="fCpa" maxlength="5">
+          <label data-i18n="customTcpa"></label>
+          <input type="text" inputmode="numeric" id="fTcpa" maxlength="3">
+        </div>
+        <div class="hint" id="profileHint"></div>
         <label data-i18n="alarmRange"></label>
         <select id="fRange"><option value="3">3 NM</option><option value="6">6 NM</option><option value="12">12 NM</option><option value="0" data-i18n="noLimit"></option></select>
         <div class="hint" data-i18n="rangeHint"></div>
@@ -168,6 +177,9 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   offline:'Connection to the node lost', noFix:'Waiting for GPS fix', noGps:'GPS not found',
   language:'Language', nodeName:'Node name', nodeType:'This node is a', boat:'Boat', person:'Person', object:'Object',
   typeHint:'The type is sent over LoRa: the other nodes show the matching symbol.',
+  alarmProfile:'Collision alarm', profHarbour:'Harbour and narrow waters', profCoastal:'Coastal', profOpen:'Open sea', profNight:'Night or poor visibility', profCustom:'Custom',
+  customCpa:'Passing distance that raises the alarm (NM, 0.02 to 5)', customTcpa:'Warning time (minutes, 1 to 60)',
+  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a NavPlotter are seen: ships and other boats are not.',
   alarmRange:'Alarm range', noLimit:'No limit', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
   alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
   tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
@@ -190,13 +202,16 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   hintOffgrid:'Connect the phone to the node WiFi. Nothing needs internet; charts come from the SD card on the node.',
   hintDirect:'Connect the phone to the node WiFi. Charts are downloaded by the phone, so it needs mobile data.',
   hintBoat:'The node joins the boat WiFi. Connect the phone to the boat WiFi too and open',
-  hintBoat2:'or the address shown on the node display. The node WiFi stays on as a way back in.',
+  hintBoat2:'or the address shown on the node display. The node WiFi stays on as a way back in.', hintBoat3:'If the boat WiFi is not found, the node WiFi comes back by itself.',
   boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
   iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
   typeHint:'Il tipo viene trasmesso via LoRa: gli altri nodi mostrano il simbolo corrispondente.',
+  alarmProfile:'Allarme di abbordo', profHarbour:'Porto e acque ristrette', profCoastal:'Costiero', profOpen:'Mare aperto', profNight:'Notte o scarsa visibilit\u00e0', profCustom:'Personalizzato',
+  customCpa:"Distanza di passaggio che fa scattare l'allarme (miglia, da 0,02 a 5)", customTcpa:'Anticipo (minuti, da 1 a 60)',
+  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un NavPlotter: navi e altre barche no.',
   alarmRange:'Raggio degli allarmi', noLimit:'Senza limite', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
   alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
   tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
@@ -219,7 +234,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   hintOffgrid:'Collega il telefono al WiFi del nodo. Non serve internet: le carte arrivano dalla scheda SD del nodo.',
   hintDirect:'Collega il telefono al WiFi del nodo. Le carte le scarica il telefono, quindi gli servono i dati mobili.',
   hintBoat:'Il nodo si collega al WiFi della barca. Collega anche il telefono al WiFi della barca e apri',
-  hintBoat2:"oppure l'indirizzo mostrato sul display del nodo. Il WiFi del nodo resta acceso come via di riserva.",
+  hintBoat2:"oppure l'indirizzo mostrato sul display del nodo. Il WiFi del nodo resta acceso come via di riserva.", hintBoat3:'Se il WiFi della barca non viene trovato, il WiFi del nodo torna da solo.',
   boatSsid:'Nome del WiFi della barca', boatPass:'Password del WiFi della barca', passKeep:'Una password è già salvata: lascia vuoto per non cambiarla.', passNone:'Lascia vuoto per una rete aperta.',
   iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo'}
 };
@@ -663,7 +678,7 @@ function renderInfo() {
     [t('iGps'), !st.gpsBaud ? t('noGps') : (o.fix ? t('iFix') + ', ' + o.sats + ' ' + t('iSats') + ', HDOP ' + o.hdop : t('noFix')) + ' (' + st.gpsBaud + ' baud)'],
     [t('iLora'), (st.lora.ok ? 'ok' : 'KO') + ', ' + st.lora.freq + ' MHz'],
     ['', t('iSent') + ' ' + st.lora.tx + ', ' + t('iRecv') + ' ' + st.lora.rx + ', ' + t('iRelay') + ' ' + st.lora.relay],
-    [t('iSd'), st.sd ? t('yes') : t('no')], [t('iBat'), st.battery.toFixed(2) + ' V'],
+    [t('iSd'), st.sd ? t('yes') : t('no')], [t('iBat'), st.battery > 0 ? st.battery.toFixed(2) + ' V' : '-'],
     [t('iWifi'), cfg.net === 2 ? (st.sta ? t('onBoat') + ': ' + st.staIp + ', ' + (cfg.host || '') : t('boatLost')) : t('nodeWifi')],
     [t('iNet'), (cfg.ssid || '') + ' (' + st.apIp + ')'], [t('iId'), cfg.id || ''], [t('iVer'), cfg.version || '']];
   $('info').innerHTML = rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join('');
@@ -690,7 +705,7 @@ function netChanged(setTiles) {
   $('netBox').style.display = cfg.apOnly ? 'none' : '';
   const n = +$('fNet').value;
   $('boatBox').style.display = n === 2 ? '' : 'none';
-  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + t('hintBoat2');
+  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
   $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
   if(setTiles) $('fTiles').value = n === 0 ? 1 : 0;
 }
@@ -698,11 +713,22 @@ $('fNet').onchange = () => netChanged(true);
 function fillForm() {
   $('fLang').value = lang; $('fName').value = cfg.name; $('fShare').checked = cfg.share !== false; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
   $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
+  $('fProfile').value = cfg.alarmProfile === undefined ? 1 : cfg.alarmProfile; $('fCpa').value = cfg.alarmCpa === undefined ? 0.1 : cfg.alarmCpa; $('fTcpa').value = cfg.alarmTcpa === undefined ? 5 : cfg.alarmTcpa;
   buildTypes();
+  profileChanged();
 }
-$('fLang').onchange = () => { lang = $('fLang').value; applyLang(); netChanged(false); };
+// Collision alarm profiles: passing distance (NM) and warning time (minutes). Same table as in the firmware.
+const PROFILES = [[0.05, 2], [0.1, 5], [0.5, 10], [1, 20]];
+function profileChanged() {
+  const p = +$('fProfile').value, custom = p === 4;
+  $('customBox').style.display = custom ? '' : 'none';
+  const cpa = custom ? parseFloat($('fCpa').value.replace(',', '.')) : PROFILES[p][0], tcpa = custom ? parseInt($('fTcpa').value) : PROFILES[p][1];
+  $('profileHint').textContent = (cpa > 0 && tcpa > 0) ? t('profileHint1') + ' ' + cpa + ' NM (' + Math.round(cpa * 1852) + ' m) ' + t('profileHint2') + ' ' + tcpa + ' ' + t('profileHint3') : '';
+}
+$('fProfile').onchange = profileChanged; $('fCpa').oninput = profileChanged; $('fTcpa').oninput = profileChanged;
+$('fLang').onchange = () => { lang = $('fLang').value; applyLang(); netChanged(false); profileChanged(); };
 $('save').onclick = () => {
-  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, share: $('fShare').checked ? 1 : 0, alarmRange: $('fRange').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
+  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, share: $('fShare').checked ? 1 : 0, alarmRange: $('fRange').value, alarmProfile: $('fProfile').value, alarmCpa: $('fCpa').value.replace(',', '.'), alarmTcpa: $('fTcpa').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
     net: $('fNet').value, staSsid: $('fStaSsid').value});
   if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
   if($('fPass').value) b.set('wifiPass', $('fPass').value);

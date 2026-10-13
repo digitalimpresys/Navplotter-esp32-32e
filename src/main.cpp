@@ -23,7 +23,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FW_VERSION "0.4.1"
+#define FW_VERSION "0.5.0"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -69,9 +69,16 @@
 #define TARGET_STALE_MS 60000UL
 #define TARGET_EXPIRE_MS 180000UL
 #define MAX_TARGETS 20
-// Collision alarm: closest point of approach below CPA_ALARM_NM within CPA_ALARM_S seconds
-#define CPA_ALARM_NM 0.1
-#define CPA_ALARM_S 300
+// Collision alarm: closest point of approach below a passing distance within a warning time, for targets
+// inside the alarm range. Distance and time come from a profile chosen in the setup page, or are typed in.
+#define ALARM_PROFILE_CUSTOM 4
+struct AlarmProfile { float cpaNm; uint16_t tcpaMin; };
+const AlarmProfile ALARM_PROFILES[ALARM_PROFILE_CUSTOM] = {
+  {0.05, 2},   // harbour and narrow waters
+  {0.1, 5},    // coastal
+  {0.5, 10},   // open sea
+  {1.0, 20},   // night or poor visibility
+};
 #define ALARM_REPEAT_MS 3000UL
 #define ALARM_MUTE_MS 60000UL   // a tap on the red band silences the alarm for a minute
 
@@ -208,6 +215,12 @@ bool radioOk = false, radioTx = false, radioTxIsRelay = false;
 bool sharePosition = true;      // transmit our own position; when off the node only listens and relays
 uint8_t nodeType = NODE_TYPE_BOAT;
 uint8_t alarmRangeNm = 3;       // only nodes inside this distance can raise the collision alarm (3, 6 or 12; 0 = no limit)
+uint8_t alarmProfile = 1;       // index in ALARM_PROFILES, or ALARM_PROFILE_CUSTOM
+float alarmCustomCpaNm = 0.1;   // the custom profile's passing distance and warning time
+uint16_t alarmCustomTcpaMin = 5;
+// The passing distance (NM) and warning time (s) in use
+float alarmCpaNm() { return alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[alarmProfile].cpaNm : alarmCustomCpaNm; }
+float alarmTcpaS() { return 60.0 * (alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[alarmProfile].tcpaMin : alarmCustomTcpaMin); }
 
 // Web app for a phone, served over the board's own WiFi network (same app as the Heltec node)
 #define WEB_ROUTES_FILE "/webroutes.json"  // where the first WiFi version kept the routes: read once, then removed
@@ -307,6 +320,9 @@ void saveSettings() {
   prefs.putBool("share", sharePosition);
   prefs.putUChar("type", nodeType);
   prefs.putUChar("range", alarmRangeNm);
+  prefs.putUChar("aprof", alarmProfile);
+  prefs.putFloat("acpa", alarmCustomCpaNm);
+  prefs.putUShort("atcpa", alarmCustomTcpaMin);
   prefs.putBool("wifi", wifiOn);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("wtiles", webTiles);
@@ -332,6 +348,10 @@ void loadSettings() {
   if(calOk) prefs.getBytes("cal2", cal, sizeof(cal));
   nodeType = prefs.getUChar("type", NODE_TYPE_BOAT);
   alarmRangeNm = prefs.getUChar("range", 3);
+  alarmProfile = prefs.getUChar("aprof", 1);
+  if(alarmProfile > ALARM_PROFILE_CUSTOM) alarmProfile = 1;
+  alarmCustomCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
+  alarmCustomTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
   wifiOn = prefs.getBool("wifi", true);
   String pass = prefs.getString("pass", "navplotter");
   webTiles = prefs.getUChar("wtiles", 1);
@@ -881,7 +901,7 @@ void updateTarget(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = (alarmRangeNm == 0 || t.distNm <= alarmRangeNm) && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = (alarmRangeNm == 0 || t.distNm <= alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
 }
 
 const Target* worstTarget() {
@@ -954,7 +974,7 @@ String configJson() {
   snprintf(buf, sizeof(buf), "{\"type\":%u,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",",
     nodeType, sharePosition ? "true" : "false", alarmRangeNm, langIt ? "it" : "en", webTiles, webSound ? "true" : "false", (unsigned long)myId, FW_VERSION);
   // apOnly: this node has only its own WiFi network, so the web app hides the connection choices
-  return String(buf) + "\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+  return String(buf) + "\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
 }
 
 void webGetConfig() { sendJson(configJson()); }
@@ -969,6 +989,9 @@ void webPostConfig() {
   }
   if(server.hasArg("type")) { int v = server.arg("type").toInt(); if(v >= NODE_TYPE_BOAT && v <= NODE_TYPE_OBJECT) nodeType = v; }
   if(server.hasArg("share")) sharePosition = server.arg("share") == "1";
+  if(server.hasArg("alarmProfile")) { int v = server.arg("alarmProfile").toInt(); if(v >= 0 && v <= ALARM_PROFILE_CUSTOM) alarmProfile = v; }
+  if(server.hasArg("alarmCpa")) { float v = server.arg("alarmCpa").toFloat(); if(v >= 0.02 && v <= 5.0) alarmCustomCpaNm = v; }
+  if(server.hasArg("alarmTcpa")) { int v = server.arg("alarmTcpa").toInt(); if(v >= 1 && v <= 60) alarmCustomTcpaMin = v; }
   if(server.hasArg("alarmRange")) { int v = server.arg("alarmRange").toInt(); if(v == 0 || v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
   if(server.hasArg("lang")) langIt = server.arg("lang") == "it";
   if(server.hasArg("tiles")) { int v = server.arg("tiles").toInt(); if(v >= 0 && v <= 2) webTiles = v; }
