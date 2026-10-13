@@ -501,7 +501,8 @@ function showTarget(id) {
   const g = st && st.targets.find(x => x.id === id); if(!g) { closeSheet(); return; }
   sheetTarget = id;
   if(fingerDown && $('sheet').classList.contains('on')) return;
-  setHtml($('sheet'), targetHtml(g) + '<div class="row"><button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>');
+  setHtml($('sheet'), targetHtml(g) + '<div class="row">' + (cfg.msg ? '<button class="btn" onclick="openChat(\'' + g.id + '\',\'' + esc(g.name) + '\')">' + t('message') + '</button>' : '') +
+    '<button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>');
   $('sheet').classList.add('on');
 }
 function showWp(id) {
