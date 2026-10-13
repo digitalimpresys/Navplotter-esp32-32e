@@ -37,6 +37,19 @@ The phone gets its charts from the board's SD card, so nothing needs internet. W
 
 Waypoints and routes are stored on the SD card in the same files as the T-Deck plotter (`waypoints.txt`, `routes.txt`); settings are kept in the board's own memory.
 
+## Messages
+
+Short texts (63 characters at most) between NavPlotters, over LoRa and through the mesh, next to the positions:
+
+- to **one node**: the message is repeated until that node confirms it has arrived ("received"), and the sender is told again when somebody there has read it ("read"). After four tries without a confirmation it shows "NO ANSWER";
+- to **everybody** in range: sent twice, no confirmation asked.
+
+On the screen: page **NEAR**, tab **Messages**; a touch on a node of the Nearby list opens the messages with it. During a collision alarm a **WRITE** button under the red band opens a message to the node in alarm. From a phone: the **Chat** page of the web app, also reached from the node's pop-up on the map and from the Nearby page.
+
+An incoming message comes up over whatever page is open, with a sound repeated until it is closed. Only nodes with this firmware, switched on and in range, receive anything, and a packet can be lost: this is a convenience, not a safety system. Messages are kept in memory (the last 12) and are lost at power-off. A beacon asleep (Segnalatore) receives nothing.
+
+The protocol is in `include/nav_messages.h`, which must be the same file in every NavPlotter that has messages. The web app reads and writes them through `/api/messages`.
+
 ## How the screen is drawn
 
 A full-screen 16-bit buffer does not fit in memory on this board, and drawing straight to the display flickers. The page area (the map, or the page that replaces it) is therefore drawn off-screen in three 272x74 strips, which do fit, and then pushed to the display. Sidebar, status bar and the on-screen keyboard are simple enough to be drawn directly. Keeping the buffer to the page area is what leaves enough memory for WiFi: with a full-screen buffer the web app could not be served.
