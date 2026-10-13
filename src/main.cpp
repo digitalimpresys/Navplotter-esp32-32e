@@ -1038,7 +1038,7 @@ String configJson() {
   snprintf(buf, sizeof(buf), "{\"type\":%u,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",",
     nodeType, sharePosition ? "true" : "false", alarmRangeNm, langIt ? "it" : "en", webTiles, webSound ? "true" : "false", (unsigned long)myId, FW_VERSION);
   // apOnly: this node has only its own WiFi network, so the web app hides the connection choices
-  return String(buf) + "\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+  return String(buf) + "\"msg\":true,\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
 }
 
 void webGetConfig() { sendJson(configJson()); }
@@ -1102,10 +1102,37 @@ void webState() {
     worst ? "true" : "false", worst ? jsonText(worst->name).c_str() : "", radioOk ? "true" : "false", (unsigned long)txCount, (unsigned long)rxCount,
     (unsigned long)relayCount, LORA_FREQ, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)udVersion);
   json += buf;
+  json.remove(json.length() - 1);
+  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
   sendJson(json);
 }
 
 // Waypoints, routes and destination are the board's own, shared with its touch screen
+// Messages from the web app: list, send, read a conversation
+void webGetMessages() { sendJson(msgListJson()); }
+
+void webPostMessage() {
+  String text = server.arg("text");
+  text.trim();
+  uint32_t to = strtoul(server.arg("to").c_str(), nullptr, 16);
+  String toName = server.arg("name");
+  for(const auto& t : targets) if(t.id == to) toName = t.name;
+  if(text.length() == 0 || text.length() >= MSG_TEXT_LEN) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+  msgSend(to, toName.c_str(), text.c_str());
+  sendJson("{\"ok\":true}");
+}
+
+void webPostMessagesRead() {
+  bool all = server.hasArg("all");
+  uint32_t peer = strtoul(server.arg("peer").c_str(), nullptr, 16);
+  msgMarkConversationRead(myId, boatName, peer, all);
+  // Read on the phone: on the board's screen the message box closes, or moves on to the next unread one
+  msgAlertIndex = -1;
+  for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
+  requestRedraw();
+  sendJson("{\"ok\":true}");
+}
+
 void webGetUserdata() {
   String json = "{\"wps\":[";
   json.reserve(300 + waypoints.size() * 90 + routes.size() * 80);
@@ -1198,6 +1225,9 @@ void startWifi() {
     server.on("/api/config", HTTP_POST, webPostConfig);
     server.on("/api/userdata", HTTP_GET, webGetUserdata);
     server.on("/api/userdata", HTTP_POST, webPostUserdata);
+    server.on("/api/messages", HTTP_GET, webGetMessages);
+    server.on("/api/messages", HTTP_POST, webPostMessage);
+    server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
     server.onNotFound(webNotFound);
   }
   server.begin();
@@ -1999,6 +2029,8 @@ void handleSerialCommands() {
       if(text.length()) { msgSend(to, toName.c_str(), text.c_str()); Serial.printf("MSG queued to %s: %s\n", to ? toName.c_str() : "all", text.c_str()); }
     } else if(line == "read") {
       if(msgAlertIndex >= 0) { dismissMessageAlert(false); Serial.println("MSG marked as read"); }
+    } else if(line == "msgjson") {
+      Serial.println(String("MSGJSON ") + msgListJson());
     } else if(line == "msgs") {
       for(const auto& m : chatMessages) Serial.printf("MSG %s %s [%d] %s\n", m.mine ? "to" : "from", m.toAll ? "all" : m.peerName, (int)m.status, m.text);
     }

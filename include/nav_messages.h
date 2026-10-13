@@ -247,3 +247,46 @@ static inline int msgUnreadCount() {
   for(const auto& m : chatMessages) if(m.unread) n++;
   return n;
 }
+
+// ---- For the web app ----
+
+// A number that changes whenever anything in the message list changes: the web app asks for the list
+// only then
+static inline uint32_t msgStamp() {
+  uint32_t h = chatMessages.size();
+  for(const auto& m : chatMessages) h = h * 31 + m.number * 7 + (uint8_t)m.status * 3 + m.tries + (m.unread ? 1 : 0) + m.peer;
+  return h;
+}
+
+// The message list as JSON. Texts and names hold only plain printable characters.
+static inline String msgListJson() {
+  String json = "{\"stamp\":" + String(msgStamp()) + ",\"messages\":[";
+  bool first = true;
+  for(const auto& m : chatMessages) {
+    char head[96];
+    snprintf(head, sizeof(head), "%s{\"mine\":%s,\"all\":%s,\"peer\":\"%08lX\",\"status\":%u,\"unread\":%s,\"age\":%lu,\"name\":\"",
+      first ? "" : ",", m.mine ? "true" : "false", m.toAll ? "true" : "false", (unsigned long)m.peer, (unsigned)m.status,
+      m.unread ? "true" : "false", (millis() - m.time) / 1000);
+    json += head;
+    for(const char* c = m.peerName; *c; c++) { if(*c == '"' || *c == '\\') json += '\\'; json += *c; }
+    json += "\",\"text\":\"";
+    for(const char* c = m.text; *c; c++) { if(*c == '"' || *c == '\\') json += '\\'; json += *c; }
+    json += "\"}";
+    first = false;
+  }
+  json += "]}";
+  return json;
+}
+
+// Marks as read the incoming messages of one conversation: those addressed to us by node peer, or (all)
+// those sent to everybody. Returns how many.
+static inline int msgMarkConversationRead(uint32_t myId, const char* myName, uint32_t peer, bool all) {
+  int n = 0;
+  for(size_t i = 0; i < chatMessages.size(); i++) {
+    const ChatMessage& m = chatMessages[i];
+    if(m.mine || !m.unread || m.toAll != all || (!all && m.peer != peer)) continue;
+    msgMarkRead(myId, myName, i);
+    n++;
+  }
+  return n;
+}

@@ -76,6 +76,31 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 .leg span{flex:1}
 .leg button{width:38px;height:36px;border-radius:8px;border:1px solid var(--line);background:none;color:var(--text);font-size:16px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+#pChat{overflow:hidden}
+#chat{display:flex;flex-direction:column;height:100%;max-width:720px;margin:0 auto}
+#chatPeers{display:flex;gap:6px;padding:8px 10px;overflow-x:auto;border-bottom:1px solid var(--line);flex:none;-webkit-overflow-scrolling:touch}
+#chatPeers button{flex:none;border:1px solid var(--line);background:none;color:var(--text);border-radius:16px;padding:7px 13px;font-size:15px;white-space:nowrap;position:relative}
+#chatPeers button.on{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:700}
+#chatPeers button.gone{opacity:.55}
+#chatPeers button.alarm{border-color:var(--red);color:var(--red)}
+#chatPeers button.alarm.on{background:var(--red);color:#fff}
+.badge{display:inline-block;min-width:18px;height:18px;line-height:18px;border-radius:9px;background:var(--red);color:#fff;font-size:12px;font-weight:700;text-align:center;margin-left:6px;padding:0 5px}
+#chatLog{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;-webkit-overflow-scrolling:touch}
+.bub{max-width:82%;padding:8px 11px;border-radius:14px;font-size:16px;line-height:1.3;word-break:break-word}
+.bub.in{align-self:flex-start;background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:4px}
+.bub.out{align-self:flex-end;background:#1d5fa8;border-bottom-right-radius:4px}
+.bub.out.fail{background:#7a2326}
+.bub .who{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:2px}
+.bub .meta{font-size:11px;color:var(--dim);margin-top:3px;text-align:right}
+.bub.out .meta{color:#cfe2f7}
+#chatHint{color:var(--dim);font-size:13px;text-align:center;padding:0 12px 6px;flex:none}
+#chatBar{display:flex;gap:8px;padding:8px 10px;border-top:1px solid var(--line);background:var(--panel);flex:none}
+#chatText{flex:1;min-width:0}
+#chatSend{flex:none}
+#msgToast{display:none;background:#f2c200;color:#111;padding:8px 10px;font-size:15px;font-weight:600}
+#msgToast.on{display:block}
+nav button{position:relative}
+nav .badge{position:absolute;top:3px;left:55%;margin:0}
 </style>
 </head>
 <body>
@@ -91,6 +116,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
   </div>
   <div id="offline" data-i18n="offline"></div>
   <div id="alarm"><span id="alarmText"></span><button id="mute"></button></div>
+  <div id="msgToast"></div>
   <main>
     <section class="page on" id="pMap">
       <canvas id="map"></canvas>
@@ -104,6 +130,12 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
     </section>
     <section class="page" id="pCompass"><canvas id="compass"></canvas></section>
     <section class="page" id="pNearby"><div class="wrap"><h2 data-i18n="nearby"></h2><div id="nearbyList"></div></div></section>
+    <section class="page" id="pChat"><div id="chat">
+      <div id="chatPeers"></div>
+      <div id="chatLog"></div>
+      <div id="chatHint"></div>
+      <div id="chatBar"><input type="text" id="chatText" maxlength="63" autocomplete="off" enterkeyhint="send"><button class="btn" id="chatSend" data-i18n="send"></button></div>
+    </div></section>
     <section class="page" id="pWp"><div class="wrap">
       <div class="seg"><button id="segWp" class="on" data-i18n="waypoints"></button><button id="segRt" data-i18n="routes"></button></div>
       <div id="wpPane">
@@ -175,6 +207,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
     <button data-p="pMap" class="on"><i>&#9973;</i><span data-i18n="map"></span></button>
     <button data-p="pCompass"><i>&#10022;</i><span data-i18n="compass"></span></button>
     <button data-p="pNearby"><i>&#9678;</i><span data-i18n="nearby"></span></button>
+    <button data-p="pChat" id="navChat" style="display:none"><i>&#9993;</i><span data-i18n="chat"></span><b class="badge" id="navBadge" style="display:none"></b></button>
     <button data-p="pWp"><i>&#9873;</i><span data-i18n="waypoints"></span></button>
     <button data-p="pSetup"><i>&#9881;</i><span data-i18n="setup"></span></button>
   </nav>
@@ -184,6 +217,9 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 // ---------- Texts: English is the reference language, Italian the first translation ----------
 const I18N = {
 en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup:'Setup',
+  chat:'Chat', send:'Send', everybody:'Everybody', message:'Message', msgFrom:'Message from', msgPlaceholder:'Write a message', msgNone:'No messages yet.',
+  msgHintAll:'To everybody in range: no confirmation is asked.', msgHintOne:'Repeated until the other node confirms it. You are told when it is read.', msgHintGone:'This node is not being received now: the message may not arrive.',
+  st1:'sending', st2:'sent', st3:'received', st4:'read', st5:'NO ANSWER', minAgo:'min ago', now:'now', toAll:'to everybody',
   offline:'Connection to the node lost', noFix:'Waiting for GPS fix', noGps:'GPS not found',
   language:'Language', nodeName:'Node name', nodeType:'This node is a', boat:'Boat', person:'Person', object:'Object',
   typeHint:'The type is sent over LoRa: the other nodes show the matching symbol.',
@@ -218,6 +254,9 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
   iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
+  chat:'Chat', send:'Invia', everybody:'Tutti', message:'Messaggio', msgFrom:'Messaggio da', msgPlaceholder:'Scrivi un messaggio', msgNone:'Nessun messaggio.',
+  msgHintAll:'A tutti quelli in portata: non viene chiesta conferma.', msgHintOne:"Ripetuto finch\u00e9 l'altro nodo non conferma. Vieni avvisato quando viene letto.", msgHintGone:'Questo nodo ora non viene ricevuto: il messaggio potrebbe non arrivare.',
+  st1:'invio', st2:'inviato', st3:'ricevuto', st4:'letto', st5:'NESSUNA RISPOSTA', minAgo:'min fa', now:'adesso', toAll:'a tutti',
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
   typeHint:'Il tipo viene trasmesso via LoRa: gli altri nodi mostrano il simbolo corrispondente.',
@@ -581,7 +620,8 @@ function renderNearby() {
   if(!st || !st.targets.length) { setHtml($('nearbyList'), '<div class="empty">' + t('noNodes') + '</div>'); return; }
   const list = [...st.targets].sort((a, b) => (b.alarm - a.alarm) || (a.dist - b.dist));
   setHtml($('nearbyList'), list.map(g => '<div class="card' + (g.alarm ? ' alarm' : '') + (g.stale ? ' stale' : '') + '">' + targetHtml(g) +
-    '<div class="btns"><button class="btn sec" onclick="showOnMap(\'' + g.id + '\')">' + t('centerOn') + '</button></div></div>').join(''));
+    '<div class="btns"><button class="btn sec" onclick="showOnMap(\'' + g.id + '\')">' + t('centerOn') + '</button>' +
+    (cfg.msg ? '<button class="btn" onclick="openChat(\'' + g.id + '\',\'' + esc(g.name) + '\')">' + t('message') + '</button>' : '') + '</div></div>').join(''));
 }
 
 // ---------- Compass: dark face, rotating rose, fixed red bow marker, green dot for the destination ----------
@@ -756,12 +796,93 @@ $('save').onclick = () => {
   }).catch(() => { $('saved').textContent = t('saveFail'); });
 };
 
+// ---------- Chat: messages over LoRa, kept on the node ----------
+// A conversation is one node (by its id) or 'ALL'. The node holds the messages; this page shows them.
+let msgs = [], msgStampSeen = null, chatPeer = 'ALL', chatNames = {}, toastPeer = null, msgsLoaded = false;
+const convOf = m => m.all ? 'ALL' : m.peer;
+const chatOpen = () => $('pChat').classList.contains('on');
+function peerName(id) {
+  if(id === 'ALL') return t('everybody');
+  const g = st && st.targets.find(x => x.id === id);
+  return g ? g.name : (chatNames[id] || id);
+}
+function openChat(id, name) { if(name) chatNames[id] = name; chatPeer = id; showPage('pChat'); }
+function loadMsgs() {
+  return fetch('/api/messages').then(r => r.json()).then(j => {
+    const had = new Set(msgs.filter(m => !m.mine).map(m => m.peer + '|' + m.text + '|' + m.all));
+    msgs = j.messages || []; msgStampSeen = j.stamp;
+    msgs.forEach(m => { if(m.name) chatNames[m.peer] = m.name; });
+    // A message that was not there before: sound and a line at the top, unless that conversation is open
+    const fresh = msgs.filter(m => !m.mine && m.unread && !had.has(m.peer + '|' + m.text + '|' + m.all));
+    if(msgsLoaded && fresh.length) {
+      const m = fresh[fresh.length - 1];
+      if(!(chatOpen() && chatPeer === convOf(m))) {
+        toastPeer = convOf(m);
+        $('msgToast').textContent = t('msgFrom') + ' ' + m.name + (m.all ? ' (' + t('toAll') + ')' : '') + ': ' + m.text;
+        $('msgToast').classList.add('on');
+      }
+      if(cfg.sound !== false) beep(2);
+    }
+    msgsLoaded = true;
+    renderChat();
+  }).catch(() => {});
+}
+$('msgToast').onclick = () => { $('msgToast').classList.remove('on'); if(toastPeer) openChat(toastPeer); };
+function markRead() {
+  if(!chatOpen() || !msgs.some(m => !m.mine && m.unread && convOf(m) === chatPeer)) return;
+  msgs.forEach(m => { if(!m.mine && convOf(m) === chatPeer) m.unread = false; });
+  if(toastPeer === chatPeer) $('msgToast').classList.remove('on');
+  const b = new URLSearchParams(chatPeer === 'ALL' ? {all: 1} : {peer: chatPeer});
+  fetch('/api/messages/read', {method: 'POST', body: b}).catch(() => {});
+}
+function renderChat() {
+  const unread = {};
+  msgs.forEach(m => { if(!m.mine && m.unread) unread[convOf(m)] = (unread[convOf(m)] || 0) + 1; });
+  const total = Object.values(unread).reduce((a, b) => a + b, 0) - (chatOpen() ? (unread[chatPeer] || 0) : 0);
+  $('navBadge').style.display = total > 0 ? '' : 'none'; $('navBadge').textContent = total;
+  if(!chatOpen()) return;
+  // Who can be written to: everybody, the nodes being received (nearest first), and whoever wrote before
+  const ids = ['ALL'];
+  if(st) [...st.targets].sort((a, b) => (b.alarm - a.alarm) || (a.dist - b.dist)).forEach(g => ids.push(g.id));
+  msgs.forEach(m => { if(!m.all && !ids.includes(m.peer)) ids.push(m.peer); });
+  if(!ids.includes(chatPeer)) ids.push(chatPeer);
+  setHtml($('chatPeers'), ids.map(id => {
+    const g = st && st.targets.find(x => x.id === id);
+    return '<button data-id="' + id + '" class="' + (id === chatPeer ? 'on' : '') + (id !== 'ALL' && (!g || g.stale) ? ' gone' : '') + (g && g.alarm ? ' alarm' : '') + '">' +
+      esc(peerName(id)) + (unread[id] && id !== chatPeer ? '<b class="badge">' + unread[id] + '</b>' : '') + '</button>';
+  }).join(''));
+  $('chatPeers').querySelectorAll('button').forEach(b => { b.onclick = () => { chatPeer = b.dataset.id; renderChat(); }; });
+  const list = msgs.filter(m => convOf(m) === chatPeer);
+  const log = $('chatLog'), atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  const before = log._html;
+  setHtml(log, list.length ? list.map(m => {
+    const age = m.age < 60 ? t('now') : Math.floor(m.age / 60) + ' ' + t('minAgo');
+    if(m.mine) return '<div class="bub out' + (m.status === 5 ? ' fail' : '') + '">' + esc(m.text) + '<div class="meta">' + age + ' &middot; ' + t('st' + m.status) + (m.status >= 3 && m.status <= 4 ? ' &#10003;' + (m.status === 4 ? '&#10003;' : '') : '') + '</div></div>';
+    return '<div class="bub in">' + (chatPeer === 'ALL' ? '<div class="who">' + esc(m.name) + '</div>' : '') + esc(m.text) + '<div class="meta">' + age + '</div></div>';
+  }).join('') : '<div class="empty">' + t('msgNone') + '</div>');
+  if(log._html !== before && atEnd) log.scrollTop = log.scrollHeight;
+  const g = st && st.targets.find(x => x.id === chatPeer);
+  $('chatHint').textContent = chatPeer === 'ALL' ? t('msgHintAll') : (!g || g.stale) ? t('msgHintGone') : t('msgHintOne');
+  $('chatText').placeholder = t('msgPlaceholder');
+  markRead();
+}
+function sendChat() {
+  const text = $('chatText').value.trim();
+  if(!text) return;
+  const b = new URLSearchParams({to: chatPeer === 'ALL' ? '0' : chatPeer, name: chatPeer === 'ALL' ? '' : peerName(chatPeer), text});
+  $('chatText').value = '';
+  fetch('/api/messages', {method: 'POST', body: b}).then(() => loadMsgs()).then(() => { const log = $('chatLog'); log.scrollTop = log.scrollHeight; }).catch(() => { $('chatText').value = text; });
+}
+$('chatSend').onclick = sendChat;
+$('chatText').onkeydown = e => { if(e.key === 'Enter') { e.preventDefault(); sendChat(); } };
+
 // ---------- Pages ----------
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('on', p.id === id));
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.p === id));
   if(id !== 'pMap') closeSheet();
   renderAll();
+  if(id === 'pChat') { renderChat(); const log = $('chatLog'); log.scrollTop = log.scrollHeight; }
 }
 document.querySelectorAll('#nav button').forEach(b => { b.onclick = () => showPage(b.dataset.p); });
 window.addEventListener('resize', renderAll);
@@ -774,13 +895,18 @@ function poll() {
     if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
     advanceRoute();
+    // Messages: asked for only when the node says something changed; their ages are refreshed meanwhile
+    if(cfg.msg && j.msgStamp !== undefined) {
+      if(j.msgStamp !== msgStampSeen) loadMsgs();
+      else if(chatOpen() && !fingerDown) { msgs.forEach(m => { m.age++; }); if(document.activeElement !== $('chatText') || true) renderChat(); }
+    }
     renderAll(true);
   }).catch(() => { clearTimeout(timer); online = false; renderStatus(); });
 }
 Promise.all([
   fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),
   loadUd()
-]).then(() => { applyLang(); fillForm(); poll(); setInterval(poll, 1000); });
+]).then(() => { applyLang(); fillForm(); $('navChat').style.display = cfg.msg ? '' : 'none'; poll(); setInterval(poll, 1000); });
 </script>
 </body>
 </html>
