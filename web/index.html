@@ -217,6 +217,7 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
 // ---------- Texts: English is the reference language, Italian the first translation ----------
 const I18N = {
 en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup:'Setup',
+  quietOn:'Alarm off for this boat', quietOff:'Alarm on again', quietTag:'alarm off',
   chat:'Chat', send:'Send', everybody:'Everybody', message:'Message', msgFrom:'Message from', msgPlaceholder:'Write a message', msgNone:'No messages yet.',
   msgHintAll:'To everybody in range: no confirmation is asked.', msgHintOne:'Repeated until the other node confirms it. You are told when it is read.', msgHintGone:'This node is not being received now: the message may not arrive.',
   st1:'sending', st2:'sent', st3:'received', st4:'read', st5:'NO ANSWER', minAgo:'min ago', now:'now', toAll:'to everybody',
@@ -254,6 +255,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
   iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
+  quietOn:'Spegni allarme per questa barca', quietOff:'Riattiva allarme', quietTag:'allarme spento',
   chat:'Chat', send:'Invia', everybody:'Tutti', message:'Messaggio', msgFrom:'Messaggio da', msgPlaceholder:'Scrivi un messaggio', msgNone:'Nessun messaggio.',
   msgHintAll:'A tutti quelli in portata: non viene chiesta conferma.', msgHintOne:"Ripetuto finch\u00e9 l'altro nodo non conferma. Vieni avvisato quando viene letto.", msgHintGone:'Questo nodo ora non viene ricevuto: il messaggio potrebbe non arrivare.',
   st1:'invio', st2:'inviato', st3:'ricevuto', st4:'letto', st5:'NESSUNA RISPOSTA', minAgo:'min fa', now:'adesso', toAll:'a tutti',
@@ -490,7 +492,7 @@ function tapAt(p) {
 let sheetTarget = null;
 function closeSheet() { sheetTarget = null; $('sheet').classList.remove('on'); }
 function targetHtml(g) {
-  const tags = (g.relayed ? ' <span class="tag">' + t('relayed') + '</span>' : '') + (g.sim ? ' <span class="tag">' + t('simulated') + '</span>' : '');
+  const tags = (g.relayed ? ' <span class="tag">' + t('relayed') + '</span>' : '') + (g.sim ? ' <span class="tag">' + t('simulated') + '</span>' : '') + (isQuiet(g.id) ? ' <span class="tag">' + t('quietTag') + '</span>' : '');
   return '<div class="title">' + esc(g.name) + ' <span class="tag">' + t(TYPES[g.type]) + '</span>' + tags + '</div>' +
     '<div class="sub">' + t('dist') + ' ' + fmtNm(g.dist) + ' NM &middot; ' + t('brg') + ' ' + pad3(g.brg) + '&deg;</div>' +
     '<div class="sub">' + t('speed') + ' ' + g.sog.toFixed(1) + ' kn &middot; ' + t('course') + ' ' + pad3(g.cog) + '&deg;</div>' +
@@ -502,7 +504,7 @@ function showTarget(id) {
   sheetTarget = id;
   if(fingerDown && $('sheet').classList.contains('on')) return;
   setHtml($('sheet'), targetHtml(g) + '<div class="row">' + (cfg.msg ? '<button class="btn" onclick="openChat(\'' + g.id + '\',\'' + esc(g.name) + '\')">' + t('message') + '</button>' : '') +
-    '<button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>');
+    quietBtn(g.id) + '<button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>');
   $('sheet').classList.add('on');
 }
 function showWp(id) {
@@ -622,7 +624,7 @@ function renderNearby() {
   const list = [...st.targets].sort((a, b) => (b.alarm - a.alarm) || (a.dist - b.dist));
   setHtml($('nearbyList'), list.map(g => '<div class="card' + (g.alarm ? ' alarm' : '') + (g.stale ? ' stale' : '') + '">' + targetHtml(g) +
     '<div class="btns"><button class="btn sec" onclick="showOnMap(\'' + g.id + '\')">' + t('centerOn') + '</button>' +
-    (cfg.msg ? '<button class="btn" onclick="openChat(\'' + g.id + '\',\'' + esc(g.name) + '\')">' + t('message') + '</button>' : '') + '</div></div>').join(''));
+    (cfg.msg ? '<button class="btn" onclick="openChat(\'' + g.id + '\',\'' + esc(g.name) + '\')">' + t('message') + '</button>' : '') + quietBtn(g.id) + '</div></div>').join(''));
 }
 
 // ---------- Compass: dark face, rotating rose, fixed red bow marker, green dot for the destination ----------
@@ -796,6 +798,17 @@ $('save').onclick = () => {
     $('saved').textContent = j.restart ? t('restarting') : t('saved'); setTimeout(() => { $('saved').textContent = ''; }, j.restart ? 30000 : 2500);
   }).catch(() => { $('saved').textContent = t('saveFail'); });
 };
+
+// ---------- Quiet nodes: collision alarm switched off for one boat (friends sailing together) ----------
+// The list is kept on the node, which is where the alarm is worked out.
+const isQuiet = id => !!(st && st.quiet && st.quiet.includes(id));
+const quietBtn = id => (st && st.quiet) ? '<button class="btn sec" onclick="toggleQuiet(\'' + id + '\')">' + t(isQuiet(id) ? 'quietOff' : 'quietOn') + '</button>' : '';
+function toggleQuiet(id) {
+  const on = !isQuiet(id);
+  if(on) st.quiet.push(id); else st.quiet = st.quiet.filter(x => x !== id);
+  fetch('/api/quiet', {method: 'POST', body: new URLSearchParams({id, on: on ? 1 : 0})}).catch(() => {});
+  renderAll();
+}
 
 // ---------- Chat: messages over LoRa, kept on the node ----------
 // A conversation is one node (by its id) or 'ALL'. The node holds the messages; this page shows them.

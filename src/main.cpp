@@ -22,6 +22,7 @@
 #include "board.h"
 #include "traffic_packet.h"
 #include "nav_messages.h"
+#include "nav_quiet.h"
 #include "web_page.h"
 
 #define FW_VERSION "0.7.0"
@@ -259,6 +260,7 @@ int beepsLeft = 0;
 unsigned long beepNext = 0;
 bool beepOn = false;
 
+#define QUIET_BTN_W 40
 void handleSerialCommands();
 void warnCollision();
 #define WARN_BTN_X (MAP_W - 88)
@@ -341,6 +343,7 @@ void saveSettings() {
   prefs.putUChar("aprof", alarmProfile);
   prefs.putFloat("acpa", alarmCustomCpaNm);
   prefs.putUShort("atcpa", alarmCustomTcpaMin);
+  prefs.putString("quiet", quietToText());
   prefs.putBool("wifi", wifiOn);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("wtiles", webTiles);
@@ -370,6 +373,7 @@ void loadSettings() {
   if(alarmProfile > ALARM_PROFILE_CUSTOM) alarmProfile = 1;
   alarmCustomCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
   alarmCustomTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
+  quietFromText(prefs.getString("quiet", ""));
   wifiOn = prefs.getBool("wifi", true);
   String pass = prefs.getString("pass", "navplotter");
   webTiles = prefs.getUChar("wtiles", 1);
@@ -964,6 +968,8 @@ void updateTarget(Target& t) {
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
   t.alarm = (alarmRangeNm == 0 || t.distNm <= alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
+  // A quiet node (friends sailing together): shown and written to, but it never raises the alarm
+  if(isQuiet(t.id)) t.alarm = false;
 }
 
 const Target* worstTarget() {
@@ -1103,7 +1109,7 @@ void webState() {
     (unsigned long)relayCount, LORA_FREQ, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)udVersion);
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + "}";
   sendJson(json);
 }
 
@@ -1130,6 +1136,12 @@ void webPostMessagesRead() {
   msgAlertIndex = -1;
   for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
   requestRedraw();
+  sendJson("{\"ok\":true}");
+}
+
+void webPostQuiet() {
+  uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 16);
+  if(setQuiet(id, server.arg("on") == "1")) saveSettings();
   sendJson("{\"ok\":true}");
 }
 
@@ -1228,6 +1240,7 @@ void startWifi() {
     server.on("/api/messages", HTTP_GET, webGetMessages);
     server.on("/api/messages", HTTP_POST, webPostMessage);
     server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
+    server.on("/api/quiet", HTTP_POST, webPostQuiet);
     server.onNotFound(webNotFound);
   }
   server.begin();
@@ -1955,7 +1968,12 @@ void tapNearbyPage(int x, int y) {
   if(!nearbyMessages) {
     // A touch on a node of the list opens the messages with that node as the receiver
     int row = (y - 26) / 30;
-    if(y >= 26 && y < MAP_H - 36 && row < (int)targets.size()) {
+    if(y >= 26 && y < MAP_H - 36 && row < (int)targets.size() && x >= MAP_W - QUIET_BTN_W - 2) {
+      // The small button on the right of the row: collision alarm on or off for that node
+      setQuiet(targets[row].id, !isQuiet(targets[row].id));
+      saveSettings();
+      showToast(String(targets[row].name) + (isQuiet(targets[row].id) ? TR(": alarm off", ": allarme spento") : TR(": alarm on", ": allarme attivo")));
+    } else if(y >= 26 && y < MAP_H - 36 && row < (int)targets.size()) {
       chatToId = targets[row].id;
       strncpy(chatToName, targets[row].name, BOAT_NAME_LEN - 1);
       chatToName[BOAT_NAME_LEN - 1] = '\0';
@@ -2067,7 +2085,9 @@ void drawNearbyPage() {
     cv.text(buf, 6, y + 16, 1, c, C_WHITE);
     if(t.relayed) snprintf(buf, sizeof(buf), "%lus  %s", (millis() - t.lastSeen) / 1000, TR("relayed", "ripetuto"));
     else snprintf(buf, sizeof(buf), "%lus  %.0fdBm", (millis() - t.lastSeen) / 1000, t.rssi);
-    cv.text(buf, MAP_W - 6, y + 16, 1, C_DIM, C_WHITE, TR_DATUM);
+    cv.text(buf, MAP_W - QUIET_BTN_W - 8, y + 16, 1, C_DIM, C_WHITE, TR_DATUM);
+    // Collision alarm for this node: touch to switch it off (friends sailing together) or back on
+    button(MAP_W - QUIET_BTN_W - 2, y, QUIET_BTN_W, 26, isQuiet(t.id) ? TR("OFF", "NO") : TR("ALM", "ALL"), !isQuiet(t.id), 1);
     y += 30;
   }
   snprintf(buf, sizeof(buf), "%s: %s   LoRa %.3f MHz", TR("Me", "Io"), boatName, LORA_FREQ);
