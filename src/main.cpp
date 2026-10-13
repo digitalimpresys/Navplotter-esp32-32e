@@ -63,7 +63,7 @@
 #define NAME_LEN 20
 
 // ---- LoRa traffic (same packet, radio settings and mesh as the T-Deck plotter and the Heltec node) ----
-#define LORA_POWER_DBM 17
+#define LORA_POWER_DBM 20     // the most the RFM95W gives
 #define LORA_TX_MOVING_MS 10000UL
 #define LORA_TX_STOPPED_MS 30000UL
 #define TARGET_STALE_MS 60000UL
@@ -779,10 +779,12 @@ void initRadio() {
   int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER_DBM, LORA_PREAMBLE, 0);
   if(state == RADIOLIB_ERR_NONE) {
     radio.setCRC(true);
+    // The library starts with the transmitter limited to 60 mA, which holds the power below what is asked for
+    radio.setCurrentLimit(140);
     radioOk = radio.startReceive() == RADIOLIB_ERR_NONE;
   }
   radioNextTx = millis() + 5000 + random(0, 3000);
-  Serial.printf("LoRa %s (%d): %.3f MHz, SF%d, id %08lX\n", radioOk ? "ready" : "NOT available", state, LORA_FREQ, LORA_SF, (unsigned long)myId);
+  Serial.printf("LoRa %s (%d): %.3f MHz, SF%d, %d dBm, id %08lX\n", radioOk ? "ready" : "NOT available", state, LORA_FREQ, LORA_SF, LORA_POWER_DBM, (unsigned long)myId);
 }
 
 void sendPosition() {
@@ -851,6 +853,7 @@ void handleRadio() {
       radio.finishTransmit();
       radioTx = false;
       if(irq & SX127X_IRQ_TX_DONE) { if(radioTxIsRelay) relayCount++; else txCount++; }
+      Serial.printf("LoRa TX %s: sent %lu, relayed %lu\n", (irq & SX127X_IRQ_TX_DONE) ? "done" : "TIMED OUT", (unsigned long)txCount, (unsigned long)relayCount);
       radio.startReceive();
     }
     return;
