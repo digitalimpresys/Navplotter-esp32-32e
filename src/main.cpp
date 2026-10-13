@@ -2044,6 +2044,17 @@ void handleSerialCommands() {
       if(text.length()) { msgSend(to, toName.c_str(), text.c_str()); Serial.printf("MSG queued to %s: %s\n", to ? toName.c_str() : "all", text.c_str()); }
     } else if(line == "read") {
       if(msgAlertIndex >= 0) { dismissMessageAlert(false); Serial.println("MSG marked as read"); }
+    } else if(line == "sd") {
+      // What is on the card: the top folder and /tiles, to see why charts are not found
+      Serial.printf("SD: ok %d, tiles %d, type %d, size %llu MB\n", sdOk, tilesOk, (int)SD.cardType(), SD.cardSize() / 1048576ULL);
+      for(const char* path : {"/", "/tiles"}) {
+        File dir = SD.open(path);
+        if(!dir || !dir.isDirectory()) { Serial.printf("SD: %s cannot be opened\n", path); continue; }
+        int n = 0;
+        for(File f = dir.openNextFile(); f && n < 30; f = dir.openNextFile(), n++) { Serial.printf("SD: %s -> '%s' %s %lu\n", path, f.name(), f.isDirectory() ? "DIR" : "file", (unsigned long)f.size()); f.close(); }
+        Serial.printf("SD: %s has %d entries%s\n", path, n, n >= 30 ? " or more" : "");
+        dir.close();
+      }
     } else if(line == "msgjson") {
       Serial.println(String("MSGJSON ") + msgListJson());
     } else if(line == "msgs") {
