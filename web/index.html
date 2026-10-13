@@ -126,7 +126,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
         <div class="types" id="fTypes"></div>
         <div class="hint" data-i18n="typeHint"></div>
         <label data-i18n="alarmRange"></label>
-        <select id="fRange"><option value="3">3 NM</option><option value="6">6 NM</option><option value="12">12 NM</option></select>
+        <select id="fRange"><option value="3">3 NM</option><option value="6">6 NM</option><option value="12">12 NM</option><option value="0" data-i18n="noLimit"></option></select>
         <div class="hint" data-i18n="rangeHint"></div>
         <div class="check"><input type="checkbox" id="fSound"><span data-i18n="alarmSound"></span></div>
         <div class="btns"><button class="btn sec" id="testSound" data-i18n="testSound"></button></div>
@@ -168,7 +168,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   offline:'Connection to the node lost', noFix:'Waiting for GPS fix', noGps:'GPS not found',
   language:'Language', nodeName:'Node name', nodeType:'This node is a', boat:'Boat', person:'Person', object:'Object',
   typeHint:'The type is sent over LoRa: the other nodes show the matching symbol.',
-  alarmRange:'Alarm range', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
+  alarmRange:'Alarm range', noLimit:'No limit', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
   alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
   tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
   wifiPass:'New password for the node WiFi', wifiHint:'Leave empty to keep it. At least 8 characters; the node restarts.',
@@ -197,7 +197,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
   typeHint:'Il tipo viene trasmesso via LoRa: gli altri nodi mostrano il simbolo corrispondente.',
-  alarmRange:'Raggio degli allarmi', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
+  alarmRange:'Raggio degli allarmi', noLimit:'Senza limite', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
   alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
   tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
   wifiPass:'Nuova password del WiFi del nodo', wifiHint:'Lascia vuoto per non cambiarla. Almeno 8 caratteri; il nodo si riavvia.',

@@ -23,7 +23,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FW_VERSION "0.4.0"
+#define FW_VERSION "0.4.1"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -207,7 +207,7 @@ std::vector<Target> targets;
 bool radioOk = false, radioTx = false, radioTxIsRelay = false;
 bool sharePosition = true;      // transmit our own position; when off the node only listens and relays
 uint8_t nodeType = NODE_TYPE_BOAT;
-uint8_t alarmRangeNm = 3;       // only nodes inside this distance can raise the collision alarm (3, 6 or 12)
+uint8_t alarmRangeNm = 3;       // only nodes inside this distance can raise the collision alarm (3, 6 or 12; 0 = no limit)
 
 // Web app for a phone, served over the board's own WiFi network (same app as the Heltec node)
 #define WEB_ROUTES_FILE "/webroutes.json"  // where the first WiFi version kept the routes: read once, then removed
@@ -339,7 +339,7 @@ void loadSettings() {
   prefs.end();
   if(boatName[0] == '\0') strcpy(boatName, "BOAT");
   if(nodeType > NODE_TYPE_OBJECT) nodeType = NODE_TYPE_BOAT;
-  if(alarmRangeNm != 3 && alarmRangeNm != 6 && alarmRangeNm != 12) alarmRangeNm = 3;
+  if(alarmRangeNm != 0 && alarmRangeNm != 3 && alarmRangeNm != 6 && alarmRangeNm != 12) alarmRangeNm = 3;
   if(pass.length() < 8 || pass.length() > 32) pass = "navplotter";
   strcpy(wifiPass, pass.c_str());
   if(webTiles > 2) webTiles = 1;
@@ -881,7 +881,7 @@ void updateTarget(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = t.distNm <= alarmRangeNm && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = (alarmRangeNm == 0 || t.distNm <= alarmRangeNm) && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
 }
 
 const Target* worstTarget() {
@@ -969,7 +969,7 @@ void webPostConfig() {
   }
   if(server.hasArg("type")) { int v = server.arg("type").toInt(); if(v >= NODE_TYPE_BOAT && v <= NODE_TYPE_OBJECT) nodeType = v; }
   if(server.hasArg("share")) sharePosition = server.arg("share") == "1";
-  if(server.hasArg("alarmRange")) { int v = server.arg("alarmRange").toInt(); if(v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
+  if(server.hasArg("alarmRange")) { int v = server.arg("alarmRange").toInt(); if(v == 0 || v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
   if(server.hasArg("lang")) langIt = server.arg("lang") == "it";
   if(server.hasArg("tiles")) { int v = server.arg("tiles").toInt(); if(v >= 0 && v <= 2) webTiles = v; }
   if(server.hasArg("sound")) webSound = server.arg("sound") == "1";
