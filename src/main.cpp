@@ -1901,7 +1901,19 @@ void chatCompose() {
 
 void tapNearbyPage(int x, int y) {
   if(y < 24) { nearbyMessages = x >= 116; requestRedraw(); return; }
-  if(!nearbyMessages || y < ACTION_Y) return;
+  if(!nearbyMessages) {
+    // A touch on a node of the list opens the messages with that node as the receiver
+    int row = (y - 26) / 30;
+    if(y >= 26 && y < MAP_H - 36 && row < (int)targets.size()) {
+      chatToId = targets[row].id;
+      strncpy(chatToName, targets[row].name, BOAT_NAME_LEN - 1);
+      chatToName[BOAT_NAME_LEN - 1] = '\0';
+      nearbyMessages = true;
+      requestRedraw();
+    }
+    return;
+  }
+  if(y < ACTION_Y) return;
   if(x < 154) chatNextRecipient(); else chatCompose();
 }
 
