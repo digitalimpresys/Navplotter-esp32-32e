@@ -982,8 +982,10 @@ void updateTraffic() {
     else ++it;
   }
   bool any = false, allMuted = true;
+  for(auto& t : targets) updateTarget(t);
+  // The list stays sorted by distance, the nearest nodes at the top
+  if(gpsFix() && targets.size() > 1) std::stable_sort(targets.begin(), targets.end(), [](const Target& a, const Target& b) { return a.distNm < b.distNm; });
   for(auto& t : targets) {
-    updateTarget(t);
     // Silencing lasts while that node stays in alarm, and never more than a minute
     if(!t.alarm || millis() - t.mutedAt > ALARM_MUTE_MS) t.muted = false;
     if(t.alarm) { any = true; if(!t.muted) allMuted = false; }
