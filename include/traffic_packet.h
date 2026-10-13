@@ -1,6 +1,6 @@
 // Traffico LoRa tra plotter: pacchetto radio (formato nostro, versione 1) e ritrasmissione mesh.
-// Questo file DEVE essere identico nel plotter (include/), nei due simulatori (simulatori/*/include/)
-// e in navplotter-heltec/include/.
+// Questo file DEVE essere identico in tutti i NavPlotter: plotter T-Deck (include/), simulatori
+// (simulatori/*/include/), navplotter-heltec/include/, navplotter-esp32-32e e navplotter-pico-w.
 #pragma once
 #include <Arduino.h>
 
@@ -18,6 +18,22 @@
 #define NODE_TYPE_BOAT 0     // barca
 #define NODE_TYPE_PERSON 1   // persona (per esempio uomo a mare)
 #define NODE_TYPE_OBJECT 2   // oggetto (boa, tender, attrezzatura)
+// Nodo che dorme tra una trasmissione e l'altra (una boa): nei bit 3-5 di flags dichiara ogni quanto
+// trasmette, cosi' chi lo riceve non lo considera perso tra un pacchetto e il successivo. 0 = nodo normale.
+#define TRAFFIC_SLEEP_SHIFT 3
+#define TRAFFIC_SLEEP_MASK 0x07
+static const uint8_t TRAFFIC_SLEEP_MINUTES[8] = {0, 1, 2, 5, 10, 15, 30, 60};
+#define TARGET_STALE_MS 60000UL     // nodo normale: dopo un minuto senza notizie e' "vecchio"
+#define TARGET_EXPIRE_MS 180000UL   // dopo tre viene tolto
+// Per un nodo che dorme: vecchio dopo un intervallo e mezzo, tolto dopo tre
+static inline unsigned long trafficStaleMs(uint8_t flags) {
+  uint8_t m = TRAFFIC_SLEEP_MINUTES[(flags >> TRAFFIC_SLEEP_SHIFT) & TRAFFIC_SLEEP_MASK];
+  return m ? m * 90000UL + 30000UL : TARGET_STALE_MS;
+}
+static inline unsigned long trafficExpireMs(uint8_t flags) {
+  uint8_t m = TRAFFIC_SLEEP_MINUTES[(flags >> TRAFFIC_SLEEP_SHIFT) & TRAFFIC_SLEEP_MASK];
+  return m ? m * 180000UL + 60000UL : TARGET_EXPIRE_MS;
+}
 
 // Mesh: ogni pacchetto parte con ttl = MESH_TTL e può essere ritrasmesso da altri apparati finché ttl > 0
 #define MESH_TTL 2
@@ -33,7 +49,7 @@ struct __attribute__((packed)) TrafficPacket {
   uint8_t ttl;        // ritrasmissioni ancora permesse
   uint32_t id;        // identificativo dell'apparato di origine (dal MAC)
   uint8_t seq;        // numero progressivo del pacchetto, per riconoscere le copie
-  uint8_t flags;      // bit 0 = barca simulata, bit 1-2 = tipo di nodo
+  uint8_t flags;      // bit 0 = barca simulata, bit 1-2 = tipo di nodo, bit 3-5 = nodo che dorme
   int32_t lat, lon;   // gradi * 1e7
   uint16_t cog;       // decimi di grado
   uint16_t sog;       // centesimi di nodo

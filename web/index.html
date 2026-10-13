@@ -129,6 +129,11 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
           <label data-i18n="wifiOff"></label>
           <select id="fWifiOff"><option value="0" data-i18n="wifiOffNever"></option><option value="5">5 min</option><option value="10">10 min</option><option value="30">30 min</option></select>
           <div class="hint" data-i18n="wifiOffHint"></div>
+          <div id="sleepBox" style="display:none">
+            <label data-i18n="sleep"></label>
+            <select id="fSleep"><option value="0" data-i18n="sleepNo"></option><option value="1">1 min</option><option value="2">2 min</option><option value="3">5 min</option><option value="4">10 min</option><option value="5">15 min</option><option value="6">30 min</option><option value="7">60 min</option></select>
+            <div class="hint" data-i18n="sleepHint"></div>
+          </div>
         </div>
         <label data-i18n="alarmProfile"></label>
         <select id="fProfile"><option value="0" data-i18n="profHarbour"></option><option value="1" data-i18n="profCoastal"></option><option value="2" data-i18n="profOpen"></option><option value="3" data-i18n="profNight"></option><option value="4" data-i18n="profCustom"></option></select>
@@ -182,7 +187,8 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   offline:'Connection to the node lost', noFix:'Waiting for GPS fix', noGps:'GPS not found',
   language:'Language', nodeName:'Node name', nodeType:'This node is a', boat:'Boat', person:'Person', object:'Object',
   typeHint:'The type is sent over LoRa: the other nodes show the matching symbol.',
-  wifiOff:'Switch the WiFi off after power-up', wifiOffNever:'Never: always on', wifiOffHint:'For an object left alone, like a buoy: the WiFi stays on for the time needed to set it up, then goes off to save the battery. It never goes off while a phone is connected. To get it back, switch the node off and on.',
+  wifiOff:'Switch the WiFi off after power-up', sleep:'Then sleep, and send the position every', sleepNo:'No: stay awake',
+  sleepHint:'Buoy: once the WiFi is off the node sleeps and wakes only to send its position. While asleep it does not relay the other nodes. The PRG key wakes it for set-up. Needs the WiFi switch-off time above.', wifiOffNever:'Never: always on', wifiOffHint:'For an object left alone, like a buoy: the WiFi stays on for the time needed to set it up, then goes off to save the battery. It never goes off while a phone is connected. To get it back, switch the node off and on.',
   alarmProfile:'Collision alarm', profHarbour:'Harbour and narrow waters', profCoastal:'Coastal', profOpen:'Open sea', profNight:'Night or poor visibility', profCustom:'Custom',
   customCpa:'Passing distance that raises the alarm (NM, 0.02 to 5)', customTcpa:'Warning time (minutes, 1 to 60)',
   profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a NavPlotter are seen: ships and other boats are not.',
@@ -215,7 +221,8 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
   typeHint:'Il tipo viene trasmesso via LoRa: gli altri nodi mostrano il simbolo corrispondente.',
-  wifiOff:"Spegni il WiFi dopo l'accensione", wifiOffNever:'Mai: sempre acceso', wifiOffHint:"Per un oggetto lasciato da solo, come una boa: il WiFi resta acceso il tempo che serve per impostarlo, poi si spegne per risparmiare batteria. Non si spegne mai finch\u00e9 un telefono \u00e8 collegato. Per riaverlo, spegni e riaccendi il nodo.",
+  wifiOff:"Spegni il WiFi dopo l'accensione", sleep:'Poi dormi, e trasmetti la posizione ogni', sleepNo:'No: resta sveglio',
+  sleepHint:"Boa: spento il WiFi il nodo dorme e si sveglia solo per trasmettere la posizione. Mentre dorme non fa da ripetitore per gli altri. Il tasto PRG lo risveglia per le impostazioni. Serve il tempo di spegnimento del WiFi qui sopra.", wifiOffNever:'Mai: sempre acceso', wifiOffHint:"Per un oggetto lasciato da solo, come una boa: il WiFi resta acceso il tempo che serve per impostarlo, poi si spegne per risparmiare batteria. Non si spegne mai finch\u00e9 un telefono \u00e8 collegato. Per riaverlo, spegni e riaccendi il nodo.",
   alarmProfile:'Allarme di abbordo', profHarbour:'Porto e acque ristrette', profCoastal:'Costiero', profOpen:'Mare aperto', profNight:'Notte o scarsa visibilit\u00e0', profCustom:'Personalizzato',
   customCpa:"Distanza di passaggio che fa scattare l'allarme (miglia, da 0,02 a 5)", customTcpa:'Anticipo (minuti, da 1 a 60)',
   profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un NavPlotter: navi e altre barche no.',
@@ -708,6 +715,7 @@ function buildTypes() {
   });
   // Only for objects, and only on nodes that can do it
   $('wifiOffBox').style.display = (cfg.type === 2 && cfg.wifiOff !== undefined) ? '' : 'none';
+  $('sleepBox').style.display = cfg.sleep !== undefined ? '' : 'none';
 }
 // The three connection scenarios; choosing one also picks the matching chart source
 function netChanged(setTiles) {
@@ -722,7 +730,7 @@ $('fNet').onchange = () => netChanged(true);
 function fillForm() {
   $('fLang').value = lang; $('fName').value = cfg.name; $('fShare').checked = cfg.share !== false; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
   $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
-  $('fWifiOff').value = cfg.wifiOff || 0;
+  $('fWifiOff').value = cfg.wifiOff || 0; $('fSleep').value = cfg.sleep || 0;
   $('fProfile').value = cfg.alarmProfile === undefined ? 1 : cfg.alarmProfile; $('fCpa').value = cfg.alarmCpa === undefined ? 0.1 : cfg.alarmCpa; $('fTcpa').value = cfg.alarmTcpa === undefined ? 5 : cfg.alarmTcpa;
   buildTypes();
   profileChanged();
@@ -738,7 +746,7 @@ function profileChanged() {
 $('fProfile').onchange = profileChanged; $('fCpa').oninput = profileChanged; $('fTcpa').oninput = profileChanged;
 $('fLang').onchange = () => { lang = $('fLang').value; applyLang(); netChanged(false); profileChanged(); };
 $('save').onclick = () => {
-  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, share: $('fShare').checked ? 1 : 0, alarmRange: $('fRange').value, alarmProfile: $('fProfile').value, alarmCpa: $('fCpa').value.replace(',', '.'), alarmTcpa: $('fTcpa').value, wifiOff: $('fWifiOff').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
+  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, share: $('fShare').checked ? 1 : 0, alarmRange: $('fRange').value, alarmProfile: $('fProfile').value, alarmCpa: $('fCpa').value.replace(',', '.'), alarmTcpa: $('fTcpa').value, wifiOff: $('fWifiOff').value, sleep: $('fSleep').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
     net: $('fNet').value, staSsid: $('fStaSsid').value});
   if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
   if($('fPass').value) b.set('wifiPass', $('fPass').value);

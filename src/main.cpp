@@ -23,7 +23,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FW_VERSION "0.5.0"
+#define FW_VERSION "0.6.0"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -66,8 +66,6 @@
 #define LORA_POWER_DBM 20     // the most the RFM95W gives
 #define LORA_TX_MOVING_MS 10000UL
 #define LORA_TX_STOPPED_MS 30000UL
-#define TARGET_STALE_MS 60000UL
-#define TARGET_EXPIRE_MS 180000UL
 #define MAX_TARGETS 20
 // Collision alarm: closest point of approach below a passing distance within a warning time, for targets
 // inside the alarm range. Distance and time come from a profile chosen in the setup page, or are typed in.
@@ -204,6 +202,7 @@ struct Target {
   double lat = 0, lon = 0;
   float cog = 0, sog = 0;       // degrees, knots
   unsigned long lastSeen = 0;
+  unsigned long staleMs = TARGET_STALE_MS, expireMs = TARGET_EXPIRE_MS; // longer for a node that sleeps between packets
   float rssi = 0;
   bool relayed = false;
   bool cpaValid = false, alarm = false, muted = false;
@@ -835,6 +834,8 @@ void processPacket(const TrafficPacket& pkt, float rssi) {
   t->cog = pkt.cog / 10.0;
   t->sog = pkt.sog / 100.0;
   t->lastSeen = millis();
+  t->staleMs = trafficStaleMs(pkt.flags);
+  t->expireMs = trafficExpireMs(pkt.flags);
   t->rssi = rssi;
   t->relayed = pkt.ttl < MESH_TTL;
   Serial.printf("LoRa RX %s%s %.5f %.5f %.1f kn %.0f deg, RSSI %.0f\n", t->name, t->relayed ? " (relayed)" : "", t->lat, t->lon, t->sog, t->cog, rssi);
@@ -888,7 +889,7 @@ void updateTarget(Target& t) {
   if(!gpsFix()) return;
   t.distNm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
   t.brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);
-  if(millis() - t.lastSeen > TARGET_STALE_MS) return;
+  if(millis() - t.lastSeen > t.staleMs) return;
   const double KN = 0.514444; // knots -> m/s
   double age = (millis() - t.lastSeen) / 1000.0, lat0 = gps.location.lat() * DEG_TO_RAD;
   double ownSog = moving() ? gps.speed.knots() * KN : 0, ownCog = heading() * DEG_TO_RAD;
@@ -919,7 +920,7 @@ void updateTraffic() {
   if(millis() - last < 1000) return;
   last = millis();
   for(auto it = targets.begin(); it != targets.end(); ) {
-    if(millis() - it->lastSeen > TARGET_EXPIRE_MS) { it = targets.erase(it); if(page == PAGE_MAP || page == PAGE_NEARBY) requestRedraw(); }
+    if(millis() - it->lastSeen > it->expireMs) { it = targets.erase(it); if(page == PAGE_MAP || page == PAGE_NEARBY) requestRedraw(); }
     else ++it;
   }
   bool any = false, allMuted = true;
@@ -1029,7 +1030,7 @@ void webState() {
       "%s{\"id\":\"%08lX\",\"name\":\"%s\",\"type\":%u,\"sim\":false,\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"age\":%lu,"
       "\"rssi\":%.0f,\"relayed\":%s,\"stale\":%s,\"dist\":%.3f,\"brg\":%.0f,\"cpaValid\":%s,\"cpa\":%.3f,\"tcpa\":%.0f,\"alarm\":%s}",
       first ? "" : ",", (unsigned long)t.id, jsonText(t.name).c_str(), t.type, t.lat, t.lon, t.sog, t.cog, (millis() - t.lastSeen) / 1000,
-      t.rssi, t.relayed ? "true" : "false", millis() - t.lastSeen > TARGET_STALE_MS ? "true" : "false", t.distNm, t.brg,
+      t.rssi, t.relayed ? "true" : "false", millis() - t.lastSeen > t.staleMs ? "true" : "false", t.distNm, t.brg,
       t.cpaValid ? "true" : "false", t.cpaNm, t.tcpaS, t.alarm ? "true" : "false");
     json += buf;
     first = false;
@@ -1319,7 +1320,7 @@ void drawMap() {
   for(const auto& t : targets) {
     int x = lonToPx(t.lon), y = latToPx(t.lat);
     if(x < -20 || x > MAP_W + 20 || y < -20 || y > MAP_H + 20) continue;
-    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    bool stale = millis() - t.lastSeen > t.staleMs;
     uint16_t c = t.alarm ? C_RED : stale ? C_DIM : TFT_BLUE;
     if(t.type == NODE_TYPE_PERSON) {
       cv.fillCircle(x, y, 9, C_WHITE); cv.drawCircle(x, y, 9, c); cv.drawCircle(x, y, 8, c); cv.fillCircle(x, y, 3, c);
@@ -1778,7 +1779,7 @@ void drawNearbyPage() {
   static const char* const typeIt[] = {"", " (persona)", " (oggetto)"};
   for(const auto& t : targets) {
     if(y > MAP_H - 62) break;
-    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    bool stale = millis() - t.lastSeen > t.staleMs;
     uint16_t c = t.alarm ? C_RED : stale ? C_DIM : C_BLACK;
     String line = String(t.name) + (langIt ? typeIt[t.type] : typeEn[t.type]);
     if(gpsFix()) {
