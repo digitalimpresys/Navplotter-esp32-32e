@@ -137,10 +137,16 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
       <div id="chatBar"><input type="text" id="chatText" maxlength="63" autocomplete="off" enterkeyhint="send"><button class="btn" id="chatSend" data-i18n="send"></button></div>
     </div></section>
     <section class="page" id="pWp"><div class="wrap">
-      <div class="seg"><button id="segWp" class="on" data-i18n="waypoints"></button><button id="segRt" data-i18n="routes"></button></div>
+      <div class="seg"><button id="segWp" class="on" data-i18n="waypoints"></button><button id="segRt" data-i18n="routes"></button><button id="segTrk" data-i18n="track" style="display:none"></button></div>
       <div id="wpPane">
         <div class="btns" style="margin:0 0 12px"><button class="btn" id="wpHere" data-i18n="wpHere"></button></div>
         <div id="wpList"></div><div class="hint" data-i18n="wpHint"></div>
+      </div>
+      <div id="trkPane" style="display:none">
+        <div class="card"><div class="title" data-i18n="trackTitle"></div><div class="kv" id="trkInfo" style="margin-top:8px"></div>
+          <div class="check"><input type="checkbox" id="trkShow"><span data-i18n="trackShow"></span></div>
+          <div class="btns"><a class="btn" id="trkGpx" href="/api/track.gpx" download data-i18n="trackGpx"></a><button class="btn sec" id="trkOnMap" data-i18n="trackOnMap"></button><button class="btn red" id="trkNew" data-i18n="trackNew"></button></div>
+          <div class="hint" data-i18n="trackHint"></div></div>
       </div>
       <div id="rtPane" style="display:none">
         <div class="btns" style="margin:0 0 12px"><button class="btn" id="rtNew" data-i18n="rtNew"></button></div>
@@ -242,6 +248,9 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   dest:'Destination', heading:'HEADING', fromCog:'from GPS course', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
   iGps:'GPS', iFix:'fix', iSats:'satellites', iLora:'LoRa', iSent:'sent', iRecv:'received', iRelay:'relayed', iSd:'SD card', iBat:'Battery',
   iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me',
+  track:'Track', trackTitle:'Track of the boat', trackShow:'Show the track on the map', trackGpx:'Save as GPX', trackOnMap:'Show on the map', trackNew:'New track',
+  trackHint:'The node records a point every 25 metres made good, by itself, also with the phone off. When the track is full its oldest part is dropped. A new track erases the present one: save it first if you want to keep it.',
+  trackAsk:'Start a new track? The present one is erased.', trkPoints:'Points', trkLength:'Length', trkStart:'Start', trkTime:'Duration', trkNone:'No points yet: the boat has not moved.',
   routes:'Routes', rtNew:'New route', rtName:'Route name', noRoutes:'No routes yet', rtFollow:'Follow', edit:'Edit', done:'Done',
   rtAddWp:'Add a waypoint to the route', rtEmpty:'No waypoints in this route yet', rtNoWps:'Create some waypoints first', total:'Total', remaining:'Remaining',
   route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at',
@@ -280,6 +289,9 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   dest:'Destinazione', heading:'PRORA', fromCog:'da COG', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
   iGps:'GPS', iFix:'fix', iSats:'satelliti', iLora:'LoRa', iSent:'inviati', iRecv:'ricevuti', iRelay:'ripetuti', iSd:'Scheda SD', iBat:'Batteria',
   iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io',
+  track:'Tracciato', trackTitle:'Tracciato della barca', trackShow:'Mostra il tracciato sulla mappa', trackGpx:'Salva come GPX', trackOnMap:'Mostra sulla mappa', trackNew:'Nuovo tracciato',
+  trackHint:"Il nodo registra un punto ogni 25 metri percorsi, da solo, anche a telefono spento. Quando il tracciato \u00e8 pieno la parte pi\u00f9 vecchia viene tolta. Un nuovo tracciato cancella quello attuale: salvalo prima se vuoi tenerlo.",
+  trackAsk:'Iniziare un nuovo tracciato? Quello attuale viene cancellato.', trkPoints:'Punti', trkLength:'Lunghezza', trkStart:'Inizio', trkTime:'Durata', trkNone:'Ancora nessun punto: la barca non si \u00e8 mossa.',
   routes:'Rotte', rtNew:'Nuova rotta', rtName:'Nome della rotta', noRoutes:'Nessuna rotta', rtFollow:'Segui', edit:'Modifica', done:'Fine',
   rtAddWp:'Aggiungi un waypoint alla rotta', rtEmpty:'Nessun waypoint in questa rotta', rtNoWps:'Crea prima dei waypoint', total:'Totale', remaining:'Mancano',
   route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a',
@@ -386,6 +398,20 @@ function drawMap() {
       const img = getTile(z, ((tx % n) + n) % n, ty);
       if(img) c.drawImage(img, tx * 256 - ox, ty * 256 - oy, 256, 256);
     }
+  }
+  // The track, under everything else: orange, with a white edge so that it shows on any chart
+  if(trkShow && trk.pts.length > 1) {
+    c.lineJoin = 'round'; c.lineCap = 'round'; c.beginPath();
+    let pen = false, lx = 0, ly = 0;
+    for(const q of trk.pts) {
+      const [x, y] = px(q[0], q[1]);
+      // Points far off the screen are skipped, and so are those less than two pixels from the last one drawn
+      if(x < -500 || y < -500 || x > w + 500 || y > h + 500) { pen = false; continue; }
+      if(!pen) { c.moveTo(x, y); pen = true; lx = x; ly = y; }
+      else if(Math.abs(x - lx) + Math.abs(y - ly) >= 2) { c.lineTo(x, y); lx = x; ly = y; }
+    }
+    c.strokeStyle = 'rgba(255,255,255,.85)'; c.lineWidth = 5; c.stroke();
+    c.strokeStyle = '#ff7a00'; c.lineWidth = 2.5; c.stroke();
   }
   hits = [];
   c.font = '600 13px sans-serif'; c.textAlign = 'center';
@@ -610,12 +636,64 @@ $('rtNew').onclick = () => {
   ud.routes.push({id: ud.nextRouteId, name: (n.trim() || t('route') + ' ' + ud.nextRouteId).slice(0, 20), wps: []}); editRoute = ud.nextRouteId; ud.nextRouteId++;
   saveUd(); renderAll();
 };
-function showSeg(routes) {
-  $('segWp').classList.toggle('on', !routes); $('segRt').classList.toggle('on', routes);
-  $('wpPane').style.display = routes ? 'none' : ''; $('rtPane').style.display = routes ? '' : 'none'; renderAll();
+// seg: false = waypoints, true = routes, 'trk' = track
+function showSeg(seg) {
+  $('segWp').classList.toggle('on', seg === false); $('segRt').classList.toggle('on', seg === true); $('segTrk').classList.toggle('on', seg === 'trk');
+  $('wpPane').style.display = seg === false ? '' : 'none'; $('rtPane').style.display = seg === true ? '' : 'none'; $('trkPane').style.display = seg === 'trk' ? '' : 'none'; renderAll();
 }
 $('segWp').onclick = () => showSeg(false);
 $('segRt').onclick = () => showSeg(true);
+$('segTrk').onclick = () => showSeg('trk');
+
+// ---------- Track: recorded and kept by the node; here it is drawn and can be saved as a GPX file ----------
+// trk.pts holds [lat, lon, unix time] in degrees; trk.first is the index, in the node's count, of pts[0]
+const trk = {id: null, first: 0, pts: [], busy: false};
+let trkShow = true;
+try { trkShow = localStorage.getItem('trkShow') !== '0'; } catch(e) {}
+function syncTrack() {
+  const s = st && st.track;
+  if(!s || trk.busy) return;
+  if(s.id !== trk.id) { trk.id = s.id; trk.first = s.first; trk.pts = []; }
+  // The node dropped its oldest points: so do we
+  if(s.first > trk.first) { trk.pts.splice(0, s.first - trk.first); trk.first = s.first; }
+  const have = trk.first + trk.pts.length;
+  if(s.n <= have) return;
+  trk.busy = true;
+  fetch('/api/track?from=' + have).then(r => r.json()).then(j => {
+    if(j.id === trk.id && j.from === trk.first + trk.pts.length) j.points.forEach(p => trk.pts.push([p[0] / 1e6, p[1] / 1e6, p[2]]));
+    trk.busy = false; renderAll();
+  }).catch(() => { trk.busy = false; });
+}
+function trackNm() {
+  let m = 0;
+  for(let i = 1; i < trk.pts.length; i++) { const a = trk.pts[i - 1], b = trk.pts[i]; m += Math.hypot((b[0] - a[0]) * 110540, (b[1] - a[1]) * 111320 * Math.cos(a[0] * D2R)); }
+  return m / 1852;
+}
+function renderTrack() {
+  const has = !!(st && st.track);
+  $('segTrk').style.display = has ? '' : 'none';
+  if(!has || $('trkPane').style.display === 'none') return;
+  $('trkShow').checked = trkShow;
+  const n = trk.pts.length, rows = [[t('trkPoints'), String(st.track.n - st.track.first)]];
+  if(n > 1) {
+    rows.push([t('trkLength'), fmtNm(trackNm()) + ' NM']);
+    const t0 = trk.pts[0][2], t1 = trk.pts[n - 1][2];
+    if(t0) rows.push([t('trkStart'), new Date(t0 * 1000).toLocaleString(lang)]);
+    if(t0 && t1 > t0) { const m = Math.round((t1 - t0) / 60); rows.push([t('trkTime'), Math.floor(m / 60) + ' h ' + String(m % 60).padStart(2, '0') + ' min']); }
+  } else rows.push(['', t('trkNone')]);
+  setHtml($('trkInfo'), rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join(''));
+}
+$('trkShow').onchange = () => { trkShow = $('trkShow').checked; try { localStorage.setItem('trkShow', trkShow ? '1' : '0'); } catch(e) {} };
+$('trkOnMap').onclick = () => {
+  trkShow = true;
+  const n = trk.pts.length;
+  if(n) { map.lat = trk.pts[n - 1][0]; map.lon = trk.pts[n - 1][1]; map.placed = true; map.follow = false; $('follow').classList.remove('on'); }
+  showPage('pMap');
+};
+$('trkNew').onclick = () => {
+  if(!confirm(t('trackAsk'))) return;
+  fetch('/api/track/new', {method: 'POST'}).then(() => { trk.id = null; trk.pts = []; }).catch(() => {});
+};
 
 // ---------- Nearby nodes ----------
 function showOnMap(id) { const g = st.targets.find(x => x.id === id); if(!g) return; map.lat = g.lat; map.lon = g.lon; setFollow(false); showPage('pMap'); showTarget(id); }
@@ -746,7 +824,7 @@ function renderAll(fromPoll) {
   renderStatus(); drawMap(); drawCompass();
   if(fromPoll === true && fingerDown) return;
   if($('pNearby').classList.contains('on')) renderNearby();
-  if($('pWp').classList.contains('on')) { renderWp(); renderRoutes(); }
+  if($('pWp').classList.contains('on')) { renderWp(); renderRoutes(); renderTrack(); }
   if($('pSetup').classList.contains('on')) renderInfo();
   if(sheetTarget) showTarget(sheetTarget);
 }
@@ -911,6 +989,7 @@ function poll() {
     if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
     advanceRoute();
+    syncTrack();
     // Messages: asked for only when the node says something changed; their ages are refreshed meanwhile
     if(cfg.msg && j.msgStamp !== undefined) {
       if(j.msgStamp !== msgStampSeen) loadMsgs();
