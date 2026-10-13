@@ -343,7 +343,6 @@ void saveSettings() {
   prefs.putUChar("aprof", alarmProfile);
   prefs.putFloat("acpa", alarmCustomCpaNm);
   prefs.putUShort("atcpa", alarmCustomTcpaMin);
-  prefs.putString("quiet", quietToText());
   prefs.putBool("wifi", wifiOn);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("wtiles", webTiles);
@@ -373,7 +372,6 @@ void loadSettings() {
   if(alarmProfile > ALARM_PROFILE_CUSTOM) alarmProfile = 1;
   alarmCustomCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
   alarmCustomTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
-  quietFromText(prefs.getString("quiet", ""));
   wifiOn = prefs.getBool("wifi", true);
   String pass = prefs.getString("pass", "navplotter");
   webTiles = prefs.getUChar("wtiles", 1);
@@ -1141,7 +1139,7 @@ void webPostMessagesRead() {
 
 void webPostQuiet() {
   uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 16);
-  if(setQuiet(id, server.arg("on") == "1")) saveSettings();
+  setQuiet(id, server.arg("on") == "1"); // lasts until power-off: not saved
   sendJson("{\"ok\":true}");
 }
 
@@ -1970,8 +1968,7 @@ void tapNearbyPage(int x, int y) {
     int row = (y - 26) / 30;
     if(y >= 26 && y < MAP_H - 36 && row < (int)targets.size() && x >= MAP_W - QUIET_BTN_W - 2) {
       // The small button on the right of the row: collision alarm on or off for that node
-      setQuiet(targets[row].id, !isQuiet(targets[row].id));
-      saveSettings();
+      setQuiet(targets[row].id, !isQuiet(targets[row].id)); // lasts until power-off: not saved
       showToast(String(targets[row].name) + (isQuiet(targets[row].id) ? TR(": alarm off", ": allarme spento") : TR(": alarm on", ": allarme attivo")));
     } else if(y >= 26 && y < MAP_H - 36 && row < (int)targets.size()) {
       chatToId = targets[row].id;

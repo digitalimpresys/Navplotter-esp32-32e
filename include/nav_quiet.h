@@ -1,6 +1,7 @@
 // Nodes whose collision alarm is switched off ("quiet"): friends sailing together would otherwise set each
 // other's alarms off all the time. A quiet node is still received, shown and written to; it just never
-// raises the alarm. The list is kept by node id and saved by each firmware with its settings.
+// raises the alarm. The list is kept by node id and lasts until power-off: at the next start every alarm is
+// on again, so that nobody stays silenced by mistake.
 // This file MUST be identical in every NavPlotter that has it.
 #pragma once
 #include <Arduino.h>
