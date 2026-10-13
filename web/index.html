@@ -702,6 +702,8 @@ const mutedIds = new Set();
 $('mute').onclick = () => {
   const alarms = st ? st.targets.filter(g => g.alarm) : [];
   if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.add(g.id));
+  // A node with a buzzer of its own quiets it too (the others just do not have this address)
+  fetch('/api/mute', {method: 'POST', body: new URLSearchParams({on: mutedIds.size ? 1 : 0})}).catch(() => {});
   renderStatus();
 };
 
