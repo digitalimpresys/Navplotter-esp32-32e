@@ -21,9 +21,10 @@
 #include <math.h>
 #include "board.h"
 #include "traffic_packet.h"
+#include "nav_messages.h"
 #include "web_page.h"
 
-#define FW_VERSION "0.6.0"
+#define FW_VERSION "0.7.0"
 
 // ---- Screen layout (landscape, USB connector on the right) ----
 #define SCREEN_W 320
@@ -257,6 +258,19 @@ void (*kbDone)(const String&) = nullptr;
 int beepsLeft = 0;
 unsigned long beepNext = 0;
 bool beepOn = false;
+
+void handleSerialCommands();
+struct ChatMessage;
+const char* msgStatusText(const ChatMessage& m);
+// Messages over LoRa (second tab of the Nearby page): chosen receiver, and the incoming message shown over
+// every page until somebody touches the screen
+bool nearbyMessages = false;              // false = list of nodes, true = messages
+uint32_t chatToId = 0;                    // 0 = everybody
+char chatToName[BOAT_NAME_LEN] = "";
+int msgAlertIndex = -1;                   // index in chatMessages of the message being shown
+unsigned long msgAlertSince = 0, nextMsgBeep = 0;
+#define MSG_ALERT_BEEP_MS 5000UL          // until it is read, two beeps every 5 seconds...
+#define MSG_ALERT_BEEP_FOR_MS 120000UL    // ...for two minutes
 
 void requestRedraw() { needsRedraw = true; }
 void showToast(const String& t) { toast = t; toastUntil = millis() + 2500; requestRedraw(); Serial.println(t); }
@@ -499,6 +513,12 @@ void beep(int count) {
 }
 
 void handleSound() {
+  // Incoming message not read yet: two beeps every few seconds, whatever the alarm sound setting says
+  if(msgAlertIndex >= 0 && beepsLeft == 0 && !beepOn && (long)(millis() - nextMsgBeep) >= 0 && millis() - msgAlertSince < MSG_ALERT_BEEP_FOR_MS) {
+    beepsLeft = 2;
+    beepNext = millis();
+    nextMsgBeep = millis() + MSG_ALERT_BEEP_MS;
+  }
   if(beepsLeft == 0 && !beepOn) return;
   if((long)(millis() - beepNext) < 0) return;
   if(!beepOn && beepsLeft > 0) {
@@ -860,9 +880,28 @@ void handleRadio() {
     return;
   }
   if(irq & SX127X_IRQ_RX_DONE) {
-    TrafficPacket pkt;
+    // Two kinds of packet: position ('N','P', fixed length) and message ('N','M', variable length)
+    uint8_t buf[sizeof(MessagePacket)];
     size_t len = radio.getPacketLength();
-    if(len == sizeof(pkt) && radio.readData((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) processPacket(pkt, radio.getRSSI());
+    if(len >= 4 && len <= sizeof(buf) && radio.readData(buf, len) == RADIOLIB_ERR_NONE) {
+      if(len == sizeof(TrafficPacket) && buf[1] == 'P') {
+        TrafficPacket pkt;
+        memcpy(&pkt, buf, sizeof(pkt));
+        processPacket(pkt, radio.getRSSI());
+      } else if(buf[0] == 'N' && buf[1] == 'M') {
+        int events = msgReceive(myId, boatName, buf, len);
+        if(events & MSG_EVENT_NEW) {
+          const ChatMessage& m = chatMessages.back();
+          Serial.printf("LoRa MSG from %s%s: %s\n", m.peerName, m.toAll ? " (to all)" : "", m.text);
+          // The oldest unread one is shown over the page
+          if(msgAlertIndex < 0) { msgAlertSince = millis(); nextMsgBeep = millis(); }
+          msgAlertIndex = -1;
+          for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
+        }
+        if(events & MSG_EVENT_STATUS) for(const auto& m : chatMessages) if(m.mine && !m.toAll) Serial.printf("LoRa MSG to %s: status %s\n", m.peerName, msgStatusText(m));
+        if(events) requestRedraw();
+      }
+    }
     radio.startReceive();
   }
 
@@ -870,6 +909,20 @@ void handleRadio() {
   if((long)(millis() - radioNextTx) >= 0) {
     if(sharePosition && gpsFix()) { sendPosition(); return; }
     radioNextTx = millis() + 2000;
+  }
+  // Messages: confirmations, our own messages to send or repeat, other nodes' messages to relay
+  {
+    uint8_t buf[sizeof(MessagePacket)];
+    size_t len = 0;
+    if(msgNextPacket(myId, boatName, buf, len)) {
+      if(radio.startTransmit(buf, len) == RADIOLIB_ERR_NONE) {
+        radioTx = true; radioTxIsRelay = true; radioTxStart = millis(); // not counted among the positions sent
+      } else {
+        radio.startReceive();
+      }
+      if(page == PAGE_NEARBY) requestRedraw();
+      return;
+    }
   }
   // Mesh: relay packets from other nodes that still have ttl
   TrafficPacket relay;
@@ -1768,11 +1821,167 @@ void drawCompassPage() {
 // ============================================
 // Nearby page: the nodes received over LoRa
 // ============================================
+// ---- Messages over LoRa: short texts to one node (confirmed on arrival and when read) or to everybody.
+// The protocol is in include/nav_messages.h.
+const char* allName() { return TR("ALL", "TUTTI"); }
+
+const char* msgStatusText(const ChatMessage& m) {
+  static char buf[24];
+  switch(m.status) {
+    case MSG_PENDING: snprintf(buf, sizeof(buf), "%s %d...", TR("sending", "invio"), max(1, (int)m.tries)); return buf;
+    case MSG_SENT: return TR("sent", "inviato");
+    case MSG_DELIVERED: return TR("received", "ricevuto");
+    case MSG_READ: return TR("read", "letto");
+    case MSG_NO_ANSWER: return TR("NO ANSWER", "NESSUNA RISPOSTA");
+    default: return "";
+  }
+}
+
+// Breaks a text into lines that fit a width, at spaces where it can
+int wrapText(const String& text, uint8_t font, int width, String* lines, int maxLines) {
+  int n = 0, start = 0, len = text.length();
+  while(start < len && n < maxLines) {
+    int end = start, lastSpace = -1;
+    while(end < len && cv.textWidth(text.substring(start, end + 1), font) <= width) { if(text[end] == ' ') lastSpace = end; end++; }
+    if(end < len && lastSpace > start) end = lastSpace + 1;
+    if(end == start) end = start + 1;
+    lines[n++] = text.substring(start, end);
+    start = end;
+  }
+  return n;
+}
+
+void drawMessagesView() {
+  if(!radioOk) cv.text(TR("LoRa radio not found", "Radio LoRa non trovata"), 6, 28, 2, C_RED, C_WHITE);
+  else if(chatMessages.empty()) cv.text(TR("No messages yet", "Nessun messaggio"), 6, 28, 2, C_DIM, C_WHITE);
+  // The last messages, the newest at the bottom: a heading and the text on two lines
+  const int rowH = 40, rows = 4;
+  int first = max(0, (int)chatMessages.size() - rows);
+  for(int i = first; i < (int)chatMessages.size(); i++) {
+    const ChatMessage& m = chatMessages[i];
+    int y = 26 + (i - first) * rowH;
+    unsigned long age = (millis() - m.time) / 1000;
+    char head[72];
+    if(m.mine) snprintf(head, sizeof(head), "> %s %s  %lu:%02lu  %s", TR("to", "a"), m.toAll ? allName() : m.peerName, age / 60, age % 60, msgStatusText(m));
+    else snprintf(head, sizeof(head), "< %s %s%s  %lu:%02lu", TR("from", "da"), m.peerName, m.toAll ? TR(" (to all)", " (a tutti)") : "", age / 60, age % 60);
+    uint16_t c = m.mine ? (m.status == MSG_NO_ANSWER ? C_RED : (m.status == MSG_READ || m.status == MSG_DELIVERED) ? C_GREEN : C_DIM) : C_ACCENT;
+    cv.text(head, 4, y, 1, c, C_WHITE);
+    String lines[2];
+    int n = wrapText(m.text, 2, MAP_W - 12, lines, 2);
+    for(int k = 0; k < n; k++) cv.text(lines[k], 8, y + 9 + k * 14, 2, C_BLACK, C_WHITE);
+  }
+  button(2, ACTION_Y, 150, 32, String(TR("To: ", "A: ")) + (chatToId ? chatToName : allName()));
+  button(156, ACTION_Y, MAP_W - 158, 32, TR("Write", "Scrivi"), true);
+}
+
+// The receiver goes round "everybody" and the nodes received
+void chatNextRecipient() {
+  int next = 0;
+  for(size_t i = 0; i < targets.size(); i++) if(targets[i].id == chatToId) next = i + 1;
+  if(next < (int)targets.size()) {
+    chatToId = targets[next].id;
+    strncpy(chatToName, targets[next].name, BOAT_NAME_LEN - 1);
+    chatToName[BOAT_NAME_LEN - 1] = '\0';
+  } else {
+    chatToId = 0;
+    chatToName[0] = '\0';
+  }
+  requestRedraw();
+}
+
+void openKeyboard(const String& title, const String& text, int maxLen, void (*done)(const String&));
+void messageEntered(const String& s) {
+  if(s.length() > 0) msgSend(chatToId, chatToId ? chatToName : "", s.c_str());
+}
+
+void chatCompose() {
+  if(!radioOk) { showToast(TR("LoRa radio not found", "Radio LoRa non trovata")); return; }
+  openKeyboard(String(TR("Message to ", "Messaggio a ")) + (chatToId ? chatToName : allName()), "", MSG_TEXT_LEN - 1, messageEntered);
+}
+
+void tapNearbyPage(int x, int y) {
+  if(y < 24) { nearbyMessages = x >= 116; requestRedraw(); return; }
+  if(!nearbyMessages || y < ACTION_Y) return;
+  if(x < 154) chatNextRecipient(); else chatCompose();
+}
+
+// Incoming message: over every page, until somebody touches the screen. A touch on "Reply" goes on to
+// writing an answer to its sender.
+#define ALERT_X 6
+#define ALERT_Y 30
+#define ALERT_W (MAP_W - 12)
+#define ALERT_H 150
+void drawMessageAlert() {
+  if(msgAlertIndex >= (int)chatMessages.size()) { msgAlertIndex = -1; return; }
+  const ChatMessage& m = chatMessages[msgAlertIndex];
+  cv.fillRect(ALERT_X, ALERT_Y, ALERT_W, ALERT_H, C_BLACK);
+  cv.drawRect(ALERT_X + 2, ALERT_Y + 2, ALERT_W - 4, ALERT_H - 4, TFT_YELLOW);
+  cv.text(String(TR("MSG from ", "MSG da ")) + m.peerName + (m.toAll ? TR(" (to all)", " (a tutti)") : ""), MAP_W / 2, ALERT_Y + 8, 2, TFT_YELLOW, C_BLACK, TC_DATUM);
+  String lines[4];
+  int n = wrapText(m.text, 2, ALERT_W - 20, lines, 4);
+  for(int k = 0; k < n; k++) cv.text(lines[k], ALERT_X + 10, ALERT_Y + 30 + k * 17, 2, C_WHITE, C_BLACK);
+  int more = msgUnreadCount() - 1;
+  if(more > 0) cv.text(String("+ ") + more, ALERT_X + ALERT_W - 10, ALERT_Y + 8, 2, TFT_YELLOW, C_BLACK, TR_DATUM);
+  button(ALERT_X + 8, ALERT_Y + ALERT_H - 40, 116, 32, TR("Read", "Letto"));
+  button(ALERT_X + ALERT_W - 124, ALERT_Y + ALERT_H - 40, 116, 32, TR("Reply", "Rispondi"), true);
+}
+
+// Closes the message shown: for its sender it becomes "read". If there are more, the next one comes up.
+void dismissMessageAlert(bool reply) {
+  if(msgAlertIndex >= 0 && msgAlertIndex < (int)chatMessages.size()) {
+    const ChatMessage& m = chatMessages[msgAlertIndex];
+    if(reply) {
+      chatToId = m.peer;
+      strncpy(chatToName, m.peerName, BOAT_NAME_LEN - 1);
+      chatToName[BOAT_NAME_LEN - 1] = '\0';
+    }
+    msgMarkRead(myId, boatName, msgAlertIndex);
+  }
+  msgAlertIndex = -1;
+  for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
+  if(msgAlertIndex >= 0) { msgAlertSince = millis(); nextMsgBeep = millis() + 1500; }
+  else if(reply) { nearbyMessages = true; page = PAGE_NEARBY; chatCompose(); return; }
+  requestRedraw();
+}
+
+
+// Commands on the serial port, for trying the messages from a computer: msg text (to all),
+// msg @Name text, read (marks the message shown as read), msgs (list)
+void handleSerialCommands() {
+  static String line;
+  while(Serial.available()) {
+    char c = Serial.read();
+    if(c != '\n' && c != '\r') { if(line.length() < 100) line += c; continue; }
+    if(line.startsWith("msg ")) {
+      String text = line.substring(4);
+      uint32_t to = 0;
+      String toName = "";
+      if(text.startsWith("@")) {
+        int sp = text.indexOf(' ');
+        toName = text.substring(1, sp < 0 ? text.length() : sp);
+        text = sp < 0 ? "" : text.substring(sp + 1);
+        for(const auto& t : targets) if(toName.equalsIgnoreCase(t.name)) { to = t.id; toName = t.name; }
+        if(!to) { Serial.printf("MSG: no node called %s\n", toName.c_str()); line = ""; continue; }
+      }
+      if(text.length()) { msgSend(to, toName.c_str(), text.c_str()); Serial.printf("MSG queued to %s: %s\n", to ? toName.c_str() : "all", text.c_str()); }
+    } else if(line == "read") {
+      if(msgAlertIndex >= 0) { dismissMessageAlert(false); Serial.println("MSG marked as read"); }
+    } else if(line == "msgs") {
+      for(const auto& m : chatMessages) Serial.printf("MSG %s %s [%d] %s\n", m.mine ? "to" : "from", m.toAll ? "all" : m.peerName, (int)m.status, m.text);
+    }
+    line = "";
+    requestRedraw();
+  }
+}
+
 void drawNearbyPage() {
   cv.fillRect(0, 0, MAP_W, MAP_H, C_WHITE);
-  cv.text(TR("NEARBY", "VICINI"), 6, 3, 2, C_ACCENT, C_WHITE);
+  // Two tabs at the top
+  button(2, 1, 112, 22, TR("Nearby", "Vicini"), !nearbyMessages);
+  button(118, 1, 112, 22, TR("Messages", "Messaggi"), nearbyMessages);
+  if(nearbyMessages) { drawMessagesView(); return; }
   char buf[64];
-  int y = 24;
+  int y = 26;
   if(!radioOk) cv.text(TR("LoRa radio not found", "Radio LoRa non trovata"), 6, y, 2, C_RED, C_WHITE);
   else if(targets.empty()) cv.text(TR("No nodes received yet", "Nessun nodo ricevuto"), 6, y, 2, C_DIM, C_WHITE);
   static const char* const typeEn[] = {"", " (person)", " (object)"};
@@ -1923,7 +2132,10 @@ void drawKeyboardPage(bool full) {
     tftButton(1, KB_BOTTOM_Y + 1, 62, SCREEN_H - KB_BOTTOM_Y - 1, kbShift ? "abc" : "ABC", kbShift);
   }
   tft.fillRect(5, 21, SCREEN_W - 10, 24, C_WHITE);
-  drawText(tft, kbText + "_", 8, 22, 4, C_BLACK, C_WHITE, TL_DATUM);
+  // A message is longer than the box: its end is shown, where the typing happens
+  String shown = kbText + "_";
+  while(shown.length() > 1 && tft.textWidth(shown, 4) > SCREEN_W - 16) shown.remove(0, 1);
+  drawText(tft, shown, 8, 22, 4, C_BLACK, C_WHITE, TL_DATUM);
 }
 
 void tapKeyboardPage(int x, int y) {
@@ -1949,6 +2161,11 @@ void tapKeyboardPage(int x, int y) {
 // ============================================
 void onTap(int x, int y) {
   if(page == PAGE_KEYBOARD) { tapKeyboardPage(x, y); return; }
+  // An incoming message is closed first: "Reply" answers its sender, a touch anywhere else just reads it
+  if(msgAlertIndex >= 0) {
+    dismissMessageAlert(inside(x, y, ALERT_X + ALERT_W - 124, ALERT_Y + ALERT_H - 40, 116, 32));
+    return;
+  }
   if(x >= MAP_W) {
     switch(y / SIDE_BTN_H) {
       case 0: goTo(PAGE_MAP); break;
@@ -1968,6 +2185,7 @@ void onTap(int x, int y) {
       break;
     case PAGE_WAYPOINTS: tapWaypointsPage(x, y); break;
     case PAGE_SETUP: tapSetupPage(x, y); break;
+    case PAGE_NEARBY: tapNearbyPage(x, y); break;
     default: break;
   }
 }
@@ -2008,6 +2226,7 @@ void render() {
     default: break;
   }
   drawToast();
+  if(msgAlertIndex >= 0) drawMessageAlert();
   cv.push();
   if(pageChanged || sidebarDirty) { drawSidebar(); sidebarDirty = false; }
   drawStatusBar();
@@ -2119,6 +2338,7 @@ void loop() {
   readGps();
   handleTouch();
   handleRadio();
+  handleSerialCommands();
   updateTraffic();
   advanceRoute();
   handleSound();
